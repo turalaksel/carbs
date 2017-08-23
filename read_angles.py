@@ -1,16 +1,18 @@
 import numpy as np
 import particlesFromPDB as fromPDB
 
-##########################
-###### VECTOR MATH #######
-# magnitude of a vector
+chains = fromPDB.getChainsFromPDB("/Users/damasceno/Desktop/2017-07-31/oxDNA.pdb")
+
+# angle stuff
 def magvect(v):
   magnitude = np.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
   return magnitude
 
 # angle between vectors
-def angle(v1,v2,degrees=False):
-  ang = np.arccos(np.dot(v1,v2)/(magvect(v1)*magvect(v2)))
+def angle(p1,p2,p3,degrees=False):
+  v1 = p2 - p1
+  v2 = p3 - p2
+  ang = np.arccos(np.dot(v2,v1)/(magvect(v1)*magvect(v2)))
   if degrees == True:
       ang = ang*180/np.pi
   return ang
@@ -27,9 +29,6 @@ def projection(v1,v2):
 def rejection(v1,v2):
     rejection = v1 - projection(v1,v2)
     return(rejection)
-##########################
-
-chains = fromPDB.getChainsFromPDB("/Users/damasceno/Desktop/2017-07-31/oxDNA.pdb")
 
 
 c = []
@@ -42,38 +41,53 @@ for i in range(0, len(chains[0].nucleotides)):
 
 c = np.asarray(c)
 b = np.asarray(b)
-b = b - c
 
 for i in range(len(c)):
     if i < len(c) - 1:
-        b1 = b[i]
+        b1_ref = b[i] - c[i]
         c2_ref = c[i+1] - c[i]
-        new_c_ref = rejection(c2_ref, b1)
-        aa = np.cross(b1, new_c_ref)
+        new_c_ref = rejection(c2_ref, b1_ref)
+        aa = np.cross(new_c_ref,b1_ref)
     else:
-        b1 = b[i]
+        b1_ref = b[i] - c[i]
         c2_ref = c[i-1] - c[i]
-        new_c_ref = rejection(c2_ref, b1)
-        aa = np.cross(new_c_ref, b1)
+        new_c_ref = rejection(c2_ref, b1_ref)
+        aa = np.cross(new_c_ref,b1_ref)
     a.append(list(aa))
 
 a = np.asarray(a)
+a = a + c
 
 for i in range(len(c)-2):
-    angle1 = angle(c[i+1]-c[i], a[i+1],False)
-    angle2 = angle(c[i+1]-c[i], b[i+1],False)
+    angle1 = angle(c[i], c[i+1], a[i+1],False)
+    angle2 = angle(c[i], c[i+1], b[i+1],False)
     print(angle1,angle2)
 
-# back to global reference frame
-b = b + c
-a = a + c
-def dihedral(v1,v2,v3,v4,degrees=False):
-    normal = np.cross(v1-v2, v2-v3)
-    dihedral = angle(normal, v4-v3, degrees)
-    return(dihedral)
+def dihedral(p1,p2,p3,p4,degrees=False):
+    v1 = p1 - p2
+    v2 = p3 - p2
+    v3 = p4 - p3
+    v2m = -v2
+    a = np.cross(v1, v2m)
+    b = np.cross(v3, v2m)
+
+    a_norm = np.linalg.norm(a)
+    b_norm = np.linalg.norm(b)
+    v2m_norm = np.linalg.norm(v2m)
+
+    cosPhi = np.dot(a, b) / (a_norm * b_norm)
+    sinPhi = v2m_norm * np.dot(a, v3) / (a_norm * b_norm)
+
+    dihedral_angle = np.arctan(sinPhi/ cosPhi)
+    return(dihedral_angle)
 
 for i in range(len(c)-1):
     dihedral1 = dihedral(b[i],c[i],c[i+1],b[i+1],False)
     dihedral2 = dihedral(b[i],c[i],a[i],c[i+1],False)
     dihedral3 = dihedral(a[i],c[i],b[i],c[i+1],False)
     print(dihedral1, dihedral2, dihedral3)
+
+for i in range(len(c)-2):
+    angle1 = dihedral(c[i], c[i+1], b[i+1], c[i+2],False)
+    angle2 = dihedral(c[i], c[i+1], a[i+1], c[i+2],False)
+    print(angle1, angle2)
