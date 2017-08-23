@@ -8,10 +8,9 @@ from cadnano.document import Document
 import vector_tools as vTools
 
 # Read nucleotides data from cadnano
-
 app = cadnano.app()
 doc = app.document = Document()
-doc.readFile('input/2hb_conn.json');
+doc.readFile('input/tripod.json');
 
 part = doc.activePart()
 oligos = part.oligos()
@@ -25,6 +24,38 @@ oligos_array = [longest_oligo] + [staple for staple in staple_oligos]
 ##################################
 #  Helper functions for cadnano  #
 ##################################
+class nucleotide:
+    '''
+    Fixed attributes of a nucleotide
+    Attributes: index, position, strand, vh
+    '''
+    def __init__(self):
+        self.direction  = 1 #1 is fwd, -1 is reverse
+        self.global_pts = [] #backbone, sidechain and aux points in global frame
+        self.index      = []
+        self.macro_body = []#number of the connected macro-body this nucl belongs to
+        self.position   = [] #positions of axis (sidechain) and backbone particles
+        self.quaternion = []
+        self.strand	    = []
+        self.vectors    = [] #to be used for quaternion calc
+        self.vh  	    = []
+    def add_global_pts(self, pts):
+        self.global_pts.append(pts)
+    def add_index(self, index):
+        self.index.append(index)
+    def add_macro_body(self, body_num):
+        self.macro_body.append(body_num)
+    def add_position(self, position):
+        self.position.append(position)
+    def add_quaternion(self, quat):
+        self.quaternion.append(quat)
+    def add_strand(self, strand):
+        self.strand.append(strand)
+    def add_vectors(self, vectors):
+        self.vectors.append(vectors)
+    def add_vh(self, vh):
+        self.vh.append(vh)
+
 def oligoHelperList(oligo):
     '''
     Given an oligo, returns the following list of useful properties
@@ -45,48 +76,17 @@ def oligoHelperList(oligo):
         for i in range(index_5p, index_3p + direction, direction):
             strand_helper_list.append([strand, direction, vh, i])
         oligo_helper_list.append(strand_helper_list)
-    # if oligo.isCircular() == True: #connect 1st and last atoms
-        # oligo_helper_list[-1].append(oligo_helper_list[0][0])
     return(oligo_helper_list)
 
 def findCoordinates(vh, index):
     '''
     Given a vh and a index, returns (x,y,z)
-    for the backbone pts and sidechains fwd and rev
+    for the sidechain pts and backbones fwd and rev
     '''
     axis_pts = part.getCoordinates(vh)[0][index]
     fwd_pts = part.getCoordinates(vh)[1][index]
     rev_pts = part.getCoordinates(vh)[2][index]
     return [fwd_pts, axis_pts, rev_pts]
-
-class nucleotide:
-    '''
-    Fixed attributes of a nucleotide
-    Attributes: index, position, strand, vh
-    '''
-    def __init__(self):
-        self.direction  = 1 #1 is fwd, -1 is reverse
-        self.global_pts = [] #backbone, sidechain and aux points in global frame
-        self.index      = []
-        self.position   = []
-        self.quaternion = []
-        self.strand	    = []
-        self.vectors    = [] #to be used for quaternion calc
-        self.vh  	    = []
-    def add_global_pts(self, pts):
-        self.global_pts.append(pts)
-    def add_index(self, index):
-        self.index.append(index)
-    def add_position(self, position):
-        self.position.append(position)
-    def add_quaternion(self, quat):
-        self.quaternion.append(quat)
-    def add_strand(self, strand):
-        self.strand.append(strand)
-    def add_vectors(self, vectors):
-        self.vectors.append(vectors)
-    def add_vh(self, vh):
-        self.vh.append(vh)
 
 def populateNucleotides(oligo):
     strand_list = []
@@ -158,6 +158,89 @@ def generateVectorsandQuaternions(oligos_array):
                 nucl.add_quaternion(nucl_quaternion.y)
                 nucl.add_quaternion(nucl_quaternion.z)
     return(nucl_list_list)
+
+# functions needed for relaxation
+def distanceBetweenVhs(vh1, index1, vh2, index2):
+    '''
+    Given 2 points(vh, index), calculates the
+    Euclian distance between them
+    '''
+    pos1 = findCoordinates(vh1, index1)[1]
+    pos2 = findCoordinates(vh2, index2)[1]
+    distance = np.linalg.norm(pos1 - pos2)
+    return(distance)
+
+def connection3p(strand):
+    '''
+    Given a strand, returns the vhelix to which the 3p end
+    connects to, if the distance is not too far
+    '''
+    if strand.connection3p() != None:
+            vh1 = strand.idNum()
+            index1 = strand.connection3p().idx5Prime()
+            vh2 = strand.connection3p().idNum()
+            index2 = strand.connection3p().connection5p().idx3Prime()
+            distance = distanceBetweenVhs(vh1, index1, vh2, index2)
+            if distance < 10.0:
+                return(vh2)
+
+def connection5p(strand):
+    '''
+    Given a strand, returns the vhelix to which the 5p end
+    connects to, if the distance is not too far
+    '''
+    if strand.connection5p() != None:
+            vh1 = strand.idNum()
+            index1 = strand.connection5p().idx3Prime()
+            vh2 = strand.connection5p().idNum()
+            index2 = strand.connection5p().connection3p().idx5Prime()
+            distance = distanceBetweenVhs(vh1, index1, vh2, index2)
+            if distance < 10.0:
+                return(vh2)
+
+def calculateConnections(vh):
+    '''
+    Given a vh number, returns the set of neighboring vhs,
+    where a neighbor has a staple connection with vh
+    and is closer than dist = 10.0
+    '''
+    staple_strandSet = part.getStrandSets(vh)[not(vh % 2)]
+    connections = set()
+    for strand in staple_strandSet:
+        if connection3p(strand) != None:
+            connections.add(connection3p(strand))
+        if connection5p(strand) != None:
+            connections.add(connection5p(strand))
+    return(connections)
+
+def separateOrigamiParts(part):
+    '''
+    Separates the origami 'part' into bodies
+    by evaluating if a vh is connected to others
+    see: 'calculateConnections'
+    '''
+    vhs_list = list(part.getIdNums())
+    bodies = []
+
+    for vh in vhs_list: #loop over the vhs of part
+        body_index = None
+        vh_connections = calculateConnections(vh)
+        for b, body in enumerate(bodies): #loop over potential bodies already seen
+            if vh in body: #this vh is part of a known body
+                body_index = b
+                break
+            elif vh_connections.intersection(body) != set():
+            #one of the connections belong to an existing body
+                body_index = b
+                break
+        if body_index == None: # not vh nor its connections are in known bodies
+            body_index = len(bodies)
+            bodies.append(set())
+
+        bodies[body_index].add(vh)
+        bodies[body_index].update(vh_connections)
+    return(bodies)
+
 
 ##################################
 #start HOOMD code
