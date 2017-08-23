@@ -1,80 +1,96 @@
-def distanceBetweenVhs(vh1, index1, vh2, index2):
-    pos1 = findCoordinates(vh1, index1)[1]
-    pos2 = findCoordinates(vh2, index2)[1]
-    distance = np.linalg.norm(pos1 - pos2)
-    return(distance)
-
-def connection3p(strand):
-    if strand.connection3p() != None:
-            vh1 = strand.idNum()
-            index1 = strand.connection3p().idx5Prime()
-            vh2 = strand.connection3p().idNum()
-            index2 = strand.connection3p().connection5p().idx3Prime()
-            distance = distanceBetweenVhs(vh1, index1, vh2, index2)
-            if distance < 10.0:
-                return(vh2)
-
-def connection5p(strand):
-    if strand.connection5p() != None:
-            vh1 = strand.idNum()
-            index1 = strand.connection5p().idx3Prime()
-            vh2 = strand.connection5p().idNum()
-            index2 = strand.connection5p().connection3p().idx5Prime()
-            distance = distanceBetweenVhs(vh1, index1, vh2, index2)
-            if distance < 10.0:
-                return(vh2)
-
-def calculateConnections(vh):
+def populateBodiesNuclAndVhs(nucleotides_list_of_list):
     '''
-    Given a vh number, returns the set of neighboring vhs,
-    where a neighbor has a staple connection with vh
-    and is closer than dist = 10.0
+    Given a list of oligos, each composed of a list of strands
+    each composed of a list of nucleotides, find out which body
+    each nucleotide belongs to and add it to the corresponding
+    body set.
     '''
-    staple_strandSet = part.getStrandSets(vh)[not(vh % 2)]
-    connections = set()
-    for strand in staple_strandSet:
-        if connection3p(strand) != None:
-            connections.add(connection3p(strand))
-        if connection5p(strand) != None:
-            connections.add(connection5p(strand))
-    return(connections)
+    vhs_of_body = separateOrigamiParts(part)
+    vhs_of_body_list = list(vhs_of_body)
+    num_bodies = len(vhs_of_body_list)
+    bodies = [Body() for i in range(num_bodies)]
 
-def separateOrigamiParts(part):
-    '''
-    This function separates the origami 'part' into bodies
-    by evaluating if a vh is connected to others
-    see: 'calculateConnections'
-    '''
-    vhs_list = list(part.getIdNums())
-    bodies = []
-
-    for vh in vhs_list: #loop over the vhs of part
-        body_index = None
-        vh_connections = calculateConnections(vh)
-        for b, body in enumerate(bodies): #loop over potential bodies already seen
-            if vh in body: #this vh is part of a known body
-                body_index = b
-                break
-            elif vh_connections.intersection(body) != set():
-            #one of the connections belong to an existing body
-                body_index = b
-                break
-        if body_index == None: # not vh nor its connections are in known bodies
-            body_index = len(bodies)
-            bodies.append(set())
-
-        bodies[body_index].add(vh)
-        bodies[body_index].update(vh_connections)
+    for chain in nucleotides_list_of_list:
+        for strand in chain:
+            for nucl in strand:
+                # seach in each body for this nucleotides' vh, assign to body
+                body_id = [i for i in range(num_bodies) if nucl.vh in vhs_of_body[i]][0]
+                nucl.body = body_id
+                bodies[body_id].add_nucleotide(nucl)
+                bodies[body_id].add_vh(nucl.vh)
     return(bodies)
 
+def calculateCoM(positions):
+    '''
+    Given a list of arrays containing particle positions (vector3)
+    Return the center of mass (vector3) of the system of particles
+    Assumes equal masses
+    '''
+    center = np.average(np.asarray(positions)[:,:3], axis=0)
+    return(center)
+
+def calculateMomentInertia(positions):
+    '''
+    Given a list of arrays containing particle positions (vector3)
+    Return the moment of inertia (vector3) of the system of particles
+    Assumes equal masses
+    '''
+    inertia = np.array([0., 0., 0.])
+    center = calculateCoM(positions)
+    for p, pos in enumerate(positions):
+        shifted_pos = pos - center
+        new_inertia = np.multiply(shifted_pos, shifted_pos)
+        inertia = inertia + new_inertia
+    #re-scale particle masses so that body is not hugely slow
+    #this needs to be tested
+    inertia /= p
+    return(inertia)
+
+def populateBody(nucleotides_list_of_list):
+    '''
+    Given a list of oligos, each composed of a list of strands
+    each composed of a list of nucleotides,
+    first populate each body's nucleotide and Vh and
+    then calculate the other attributes.
+    '''
+
+    bodies = populateBodiesNuclAndVhs(nucleotides_list_of_list)
+
+    for body in bodies:
+        positions = [nucl.position[1] for nucl in body.nucleotides]
+        body.com_position = calculateCoM(positions)
+        body.moment_inertia = calculateMomentInertia(positions)
+        body.com_quaternion = [1., 0., 0., 0.]
+    return(bodies)
+
+all_bodies = populateBody(list_of_list_of_nucleotides)
+
+all_bodies[0].moment_inertia
+
+vhs_of_body_list
+nucl = list_of_list_of_nucleotides[1][0][0]
+nucl.vh
+for i in range(len(vhs_of_body_list)):
+    if nucl.vh in vhs_of_body[i]:
+        body_id = i
 
 
 
+for vh in vhs_of_body_list: #vhs_of_body is a set!
+    scaffold_strandSet = part.getStrandSets(vh)[vh % 2]
+    staple_strandSet = part.getStrandSets(vh)[not(vh % 2)]
+
+all_bodies = separateOrigamiParts(part)
+list(all_bodies[0])
 
 
+list_of_list_of_nucleotides = generateVectorsandQuaternions(oligos_array)
 
+list_of_list_of_nucleotides[0][0][0].vh
 
+bodies_list = [Body() for i in range(3)]
+bodies_list[0].vhs = 0
+bodies_list[0].vhs
 
-
-
-#t
+if 0 in vhs_of_body[0]:
+    print("yay")

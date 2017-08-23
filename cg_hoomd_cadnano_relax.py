@@ -1,60 +1,53 @@
 import numpy as np
-
 import argparse
-from os import path
 import sys
 import cadnano
+from os import path
 from cadnano.document import Document
-import vector_tools as vTools
+import vector_tools as vTools #needed for quaternion math and other vector calculations
 
-# Read nucleotides data from cadnano
-app = cadnano.app()
-doc = app.document = Document()
-doc.readFile('input/tripod.json');
-
-part = doc.activePart()
-oligos = part.oligos()
-
-#get all oligos (including scaffold)
-oligos_sorted_by_length = sorted(oligos, key=lambda x: x.length(), reverse=True)
-longest_oligo = oligos_sorted_by_length[0]
-staple_oligos = oligos_sorted_by_length[1:]
-oligos_array = [longest_oligo] + [staple for staple in staple_oligos]
+####### USER DEFINED VARIABLES########
+INPUT_FILENAME = 'input/tripod.json'
+RELAX = True
+######################################
 
 ##################################
 #  Helper functions for cadnano  #
 ##################################
-class nucleotide:
+class Nucleotide:
     '''
     Fixed attributes of a nucleotide
     Attributes: index, position, strand, vh
     '''
     def __init__(self):
-        self.direction  = 1 #1 is fwd, -1 is reverse
-        self.global_pts = [] #backbone, sidechain and aux points in global frame
-        self.index      = []
-        self.macro_body = []#number of the connected macro-body this nucl belongs to
-        self.position   = [] #positions of axis (sidechain) and backbone particles
-        self.quaternion = []
-        self.strand	    = []
-        self.vectors    = [] #to be used for quaternion calc
-        self.vh  	    = []
-    def add_global_pts(self, pts):
-        self.global_pts.append(pts)
-    def add_index(self, index):
-        self.index.append(index)
-    def add_macro_body(self, body_num):
-        self.macro_body.append(body_num)
-    def add_position(self, position):
-        self.position.append(position)
-    def add_quaternion(self, quat):
-        self.quaternion.append(quat)
-    def add_strand(self, strand):
-        self.strand.append(strand)
-    def add_vectors(self, vectors):
-        self.vectors.append(vectors)
+        self.direction  = 1  #1 is fwd, -1 is reverse
+        self.global_pts = None # backbone, sidechain and aux points in global frame
+        self.index      = None # z position in cadnano's unit
+        self.body       = None # body this nucl belongs to (for relaxation)
+        self.position   = None # positions of axis (sidechain) and backbone ptcls
+        self.quaternion = None
+        self.strand	    = None # strand #
+        self.vectors    = None # orth vectors in the body ref. frame for quat calc
+        self.vh  	    = None
+
+class Body:
+    '''
+    Fixed attributes of a body.
+    A body is a combination of neighboring vhs, making up a
+    collection of nucleotides that move together
+    Attributes: vhs, com_position, com_quaternion, nucleotides
+    '''
+    def __init__(self):
+        self.com_position   = None
+        self.com_quaternion = None
+        self.moment_inertia = None
+        self.nucleotides    = []   # nucleotides composing the body
+        self.vhs            = set() # vhs composing the body
+
+    def add_nucleotide(self, nucl):
+        self.nucleotides.append(nucl)
     def add_vh(self, vh):
-        self.vh.append(vh)
+        self.vhs.add(vh)
 
 def oligoHelperList(oligo):
     '''
@@ -95,13 +88,12 @@ def populateNucleotides(oligo):
         for [strand, direction, vh, index] in strands:
             coordinates = findCoordinates(vh, index)
 
-            nucl = nucleotide()
+            nucl = Nucleotide()
             nucl.direction = direction
-            nucl.add_index(index)
-            nucl.add_position(coordinates[1]) #axis (side-chain) position
-            nucl.add_position(coordinates[1 + direction]) #fwd or rev backbone vector
-            nucl.add_strand(strand)
-            nucl.add_vh(vh)
+            nucl.index = index
+            nucl.position = [coordinates[1], coordinates[1 + direction]] #side-chain, bckbone position
+            nucl.strand = strand
+            nucl.vh = vh
             nucleotides_list.append(nucl)
         strand_list.append(nucleotides_list)
     return(strand_list)
@@ -150,13 +142,14 @@ def generateVectorsandQuaternions(oligos_array):
                              aux_vector_a_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_a_1+np.array([0.00001,0,0])), \
                              aux_vector_b_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_b_1+np.array([0.00001,0,0])))
 
-                nucl.add_vectors(vect_list_1)
-                nucl.add_global_pts([backbone_1, axis_1, aux_vector_a_1 + backbone_1])
+                nucl.vectors = vect_list_1
+                nucl.global_pts = [backbone_1, axis_1, aux_vector_a_1 + backbone_1]
                 nucl_quaternion = vTools.systemQuaternion(vect_list_0, vect_list_1)
-                nucl.add_quaternion(nucl_quaternion.w)
-                nucl.add_quaternion(nucl_quaternion.x)
-                nucl.add_quaternion(nucl_quaternion.y)
-                nucl.add_quaternion(nucl_quaternion.z)
+                nucl.quaternion = [nucl_quaternion.w, \
+                                  nucl_quaternion.x, \
+                                  nucl_quaternion.y, \
+                                  nucl_quaternion.z]
+
     return(nucl_list_list)
 
 # functions needed for relaxation
@@ -241,6 +234,87 @@ def separateOrigamiParts(part):
         bodies[body_index].update(vh_connections)
     return(bodies)
 
+def calculateCoM(positions):
+    '''
+    Given a list of arrays containing particle positions (vector3)
+    Return the center of mass (vector3) of the system of particles
+    Assumes equal masses
+    '''
+    center = np.average(np.asarray(positions)[:,:3], axis=0)
+    return(center)
+
+def calculateMomentInertia(positions):
+    '''
+    Given a list of arrays containing particle positions (vector3)
+    Return the moment of inertia (vector3) of the system of particles
+    Assumes equal masses
+    '''
+    inertia = np.array([0., 0., 0.])
+    center = calculateCoM(positions)
+    for p, pos in enumerate(positions):
+        shifted_pos = pos - center
+        new_inertia = np.multiply(shifted_pos, shifted_pos)
+        inertia = inertia + new_inertia
+    #re-scale particle masses so that body is not hugely slow
+    #this needs to be tested
+    inertia /= p
+    return(inertia)
+
+def populateBodiesNuclAndVhs(nucleotides_list_of_list):
+    '''
+    Given a list of oligos, each composed of a list of strands
+    each composed of a list of nucleotides, find out which body
+    each nucleotide belongs to and add it to the corresponding
+    body set.
+    '''
+    vhs_of_body = separateOrigamiParts(part)
+    vhs_of_body_list = list(vhs_of_body)
+    num_bodies = len(vhs_of_body_list)
+    bodies = [Body() for i in range(num_bodies)]
+
+    for chain in nucleotides_list_of_list:
+        for strand in chain:
+            for nucl in strand:
+                # seach in each body for this nucleotides' vh, assign to body
+                body_id = [i for i in range(num_bodies) if nucl.vh in vhs_of_body[i]][0]
+                nucl.body = body_id
+                bodies[body_id].add_nucleotide(nucl)
+                bodies[body_id].add_vh(nucl.vh)
+    return(bodies)
+
+def populateBody(nucleotides_list_of_list):
+    '''
+    Given a list of oligos, each composed of a list of strands
+    each composed of a list of nucleotides,
+    first populate each body's nucleotide and Vh and
+    then calculate the other attributes.
+    '''
+
+    bodies = populateBodiesNuclAndVhs(nucleotides_list_of_list)
+
+    for body in bodies:
+        positions = [nucl.position[1] for nucl in body.nucleotides]
+        body.com_position = calculateCoM(positions)
+        body.moment_inertia = calculateMomentInertia(positions)
+        body.com_quaternion = [1., 0., 0., 0.]
+    return(bodies)
+
+###################################
+# start cadnano and read input file
+###################################
+# Read nucleotides data from cadnano
+app = cadnano.app()
+doc = app.document = Document(INPUT_FILENAME)
+doc.readFile();
+part = doc.activePart()
+oligos = part.oligos()
+
+oligos_sorted_by_length = sorted(oligos, key=lambda x: x.length(), reverse=True)
+longest_oligo = oligos_sorted_by_length[0]
+staple_oligos = oligos_sorted_by_length[1:]
+oligos_array = [longest_oligo] + [staple for staple in staple_oligos]
+# calculate list of oligos, each as a list of nucleotides in 5'-3' direction
+list_of_list_of_nucleotides = generateVectorsandQuaternions(oligos_array)
 
 ##################################
 #start HOOMD code
@@ -251,149 +325,12 @@ from hoomd import md
 # Start HOOMD
 context.initialize("");
 
-# calculate list of oligos, each as a list of nucleotides in 5'-3' direction
-list_of_list_of_nucleotides = generateVectorsandQuaternions(oligos_array)
-
-# calculate positions and save them into a flattened Nx3 array
-nucl_positions = [nucl.position[1] for chain in list_of_list_of_nucleotides for strand in chain for nucl in strand]
-nucl_quaternions = [nucl.quaternion for chain in list_of_list_of_nucleotides for strand in chain for nucl in strand]
-
-num_oligos = len(list_of_list_of_nucleotides)
-total_num_nucl = len(nucl_positions)
-
-snapshot = data.make_snapshot(N = total_num_nucl,
-                              box = data.boxdim(Lx=40, Ly=40, Lz=300),
-                              particle_types=['backbone','sidechain','aux'],
-                              bond_types = ['backbone','aux_sidechain'],
-                              dihedral_types = ['dihedral1', \
-                                                'dihedral21',\
-                                                'dihedral22',\
-                                                'dihedral31',\
-                                                'dihedral32']);
-
-# particle positions, types and moments of inertia
-
-# shift positions to center of box
-com = np.average(np.asarray(nucl_positions)[:,:3], axis=0)
-nucl_positions = np.asarray(nucl_positions) - com
-
-snapshot.particles.position[:] = nucl_positions
-snapshot.particles.moment_inertia[:] = [[1.,1.,1.]] #not correct. fix it
-snapshot.particles.typeid[:] = [0];
-
-# Backbone bonds
-bonds = []
-i = 0
-for chain in list_of_list_of_nucleotides:
-    flat_chain = np.concatenate(chain)
-    for n in range(i, i + len(flat_chain) - 1):
-        bonds.append([n, n+1])
-        if n == i + len(flat_chain) - 2:
-            if chain[0][0].strand[0].oligo().isCircular() == True:
-                bonds.append([n+1, i])
-    i += len(flat_chain)
-
-snapshot.bonds.resize(len(bonds))
-snapshot.bonds.group[:] = bonds
-
-# Read the snapshot and create neighbor list
-system = init.read_snapshot(snapshot);
-nl = md.nlist.cell();
-
-############ BONDS ############
-#rigid
-nucl0 = list_of_list_of_nucleotides[0][0][0]
-rigid = md.constrain.rigid();
-rigid.set_param('backbone', \
-                types=['sidechain','aux'], \
-                positions = [0.9*nucl0.vectors[0][0], 0.4*nucl0.vectors[0][1]]); #magic numbers. Check !!!
-rigid.create_bodies()
-
-#harmonic
-def harmonicDist(r, rmin, rmax, kappa, r0):
-   V = 0.5 * kappa * (r-r0)**2;
-   F = -kappa*(r-r0);
-   return (V, F)
-
-harmonic1 = md.bond.harmonic()
-harmonic1.bond_coeff.set('backbone', k=0.1, r0=0.75)
-harmonic1.bond_coeff.set('aux_sidechain', k=00.0, r0=0.1) #stop neighboring sidechains from interacting
-
-#dihedrals
-def harmonicAngle(theta, kappa, theta0):
-   V = 0.5 * kappa * (theta-theta0)**2;
-   F = -kappa*(theta-theta0);
-   return (V, F)
-
-index_1st_nucl_in_strand = 0
-for chain in range(len(list_of_list_of_nucleotides)):
-    for strand in range(len(list_of_list_of_nucleotides[chain])):
-        for nucl in range(len(list_of_list_of_nucleotides[chain][strand]) - 2):
-
-            bckbone_1 = index_1st_nucl_in_strand + nucl
-            sidechain_1 = total_num_nucl + 2*index_1st_nucl_in_strand + 2*nucl
-            aux_1 = sidechain_1 + 1
-
-            bckbone_2 = bckbone_1 + 1
-            sidechain_2 = sidechain_1 + 2
-            aux_2 = aux_1 + 2
-
-            system.dihedrals.add('dihedral1',  sidechain_1, bckbone_1, bckbone_2, sidechain_2)
-            system.dihedrals.add('dihedral21', sidechain_1, bckbone_1, aux_1, bckbone_2)
-            system.dihedrals.add('dihedral22', sidechain_2, bckbone_2, aux_2, bckbone_1)
-            system.dihedrals.add('dihedral31', aux_1, bckbone_1, sidechain_1, bckbone_2)
-            system.dihedrals.add('dihedral32', aux_2, bckbone_2, sidechain_2, bckbone_1)
-
-            system.bonds.add('aux_sidechain', sidechain_1, sidechain_2)
-
-        index_1st_nucl_in_strand += len(list_of_list_of_nucleotides[chain][strand])
+if RELAX:
+    bodies = populateBody(list_of_list_of_nucleotides)
 
 
-dtable = md.dihedral.table(width=1000)
-dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=50, theta0=-0.28))
-dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.30))
-dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.30))
-dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.57))
-dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.57))
 
-# fix particle quaternions
-p=0
-for chain in list_of_list_of_nucleotides:
-    for strand in chain:
-        for nucl in strand:
-            nucl_quaternion = nucl.quaternion
-            system.particles[p].orientation = nucl_quaternion
-            p += 1
 
-# fix diameters for vizualization
-for i in range(0, total_num_nucl):
-    system.particles[i].diameter = 0.8
-for i in range(total_num_nucl, len(system.particles), 2):
-    system.particles[i].diameter = 0.3
-    system.particles[i + 1].diameter = 0.1
-
-########## INTERACTIONS ############
-# LJ interactions
-wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
-wca.set_params(mode='shift')
-wca.pair_coeff.set('backbone', 'backbone',   epsilon=1.0, sigma=0.750, r_cut=0.750*2**(1/6))
-wca.pair_coeff.set('backbone', 'sidechain',  epsilon=1.0, sigma=0.375, r_cut=0.375*2**(1/6))
-wca.pair_coeff.set('sidechain', 'sidechain', epsilon=1.0, sigma=0.100, r_cut=0.4)
-wca.pair_coeff.set('backbone', 'aux',        epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-wca.pair_coeff.set('aux', 'sidechain',       epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-wca.pair_coeff.set('aux', 'aux',             epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-
-########## INTEGRATION ############
-md.integrate.mode_standard(dt=0.003, aniso=True);
-rigid = group.rigid_center();
-md.integrate.langevin(group=rigid, kT=0.05, seed=42);
-########## DUMP & RUN ############
-dump.gsd("output/2hb_conn.gsd",
-               period=1e4,
-               group=group.all(),
-               static=[],
-               overwrite=True);
-run(1e7);
 
 
 
