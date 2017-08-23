@@ -62,8 +62,13 @@ def nucleotideCofM(nucleotide):
     center_of_mass = np.average(positions_list_array[:,:3], axis=0)
     return(list(center_of_mass))
 
+def shift2Center(list_of_chains):
+    center = np.average(np.asarray(array)[:,:3], axis=0)
+    array = np.asarray(array) - center
+    return(array)
+
 def getChainsFromPDB(input_file):
-    previous_nucleotide_number = 1 # I assume the bodies are in order (1, 2...)
+    previous_nucleotide_number = 0 # I assume the bodies are in order (1, 2...)
     list_of_chains = []
     new_chain = Chain()
     new_nucleotide = Nucleotide()
