@@ -43,7 +43,7 @@ def calculateCoM(list_of_positions):
     Return the center of mass (vector3) of the system of particles
     Assumes equal masses
     '''
-    center = np.average(np.asarray(positions)[:,:3], axis=0)
+    center = np.average(np.asarray(list_of_positions)[:,:3], axis=0)
     return(center)
 
 def calculateMomentInertia(list_of_positions):
@@ -53,8 +53,8 @@ def calculateMomentInertia(list_of_positions):
     Assumes equal masses
     '''
     inertia = np.array([0., 0., 0.])
-    center = calculateCoM(positions)
-    for p, pos in enumerate(positions):
+    center = calculateCoM(list_of_positions)
+    for p, pos in enumerate(list_of_positions):
         shifted_pos = pos - center
         new_inertia = np.multiply(shifted_pos, shifted_pos)
         inertia = inertia + new_inertia

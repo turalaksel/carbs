@@ -263,7 +263,6 @@ def populateBody(nucleotides_list_of_list):
     first populate each body's nucleotide and Vh and
     then calculate the other attributes.
     '''
-
     bodies = populateBodiesNuclAndVhs(nucleotides_list_of_list)
 
     for body in bodies:
@@ -300,6 +299,9 @@ from hoomd import md
 
 # Start HOOMD
 context.initialize("");
+
+bodies = populateBody(list_of_list_of_nucleotides)
+
 
 
 
