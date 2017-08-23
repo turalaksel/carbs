@@ -277,9 +277,11 @@ def populateBody(nucleotides_list_of_list):
 # start cadnano and read input file
 ###################################
 # Read nucleotides data from cadnano
+# Read nucleotides data from cadnano
 app = cadnano.app()
-doc = app.document = Document(INPUT_FILENAME)
-doc.readFile();
+doc = app.document = Document()
+doc.readFile(INPUT_FILENAME);
+
 part = doc.activePart()
 oligos = part.oligos()
 
@@ -298,6 +300,8 @@ from hoomd import md
 
 # Start HOOMD
 context.initialize("");
+
+
 
 if RELAX:
     bodies = populateBody(list_of_list_of_nucleotides)
