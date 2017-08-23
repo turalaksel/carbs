@@ -1,7 +1,7 @@
 import numpy as np
 import particlesFromPDB as fromPDB
 
-chains = fromPDB.getChainsFromPDB("/Users/damasceno/Desktop/2017-07-31/oxDNA.pdb")
+chains = fromPDB.getChainsFromPDB("/Users/damasceno/Desktop/2017-08-05/oxDNA.pdb")
 
 # angle stuff
 def magvect(v):
@@ -81,13 +81,15 @@ def dihedral(p1,p2,p3,p4,degrees=False):
     dihedral_angle = np.arctan(sinPhi/ cosPhi)
     return(dihedral_angle)
 
-for i in range(len(c)-1):
-    dihedral1 = dihedral(b[i],c[i],c[i+1],b[i+1],False)
-    dihedral2 = dihedral(b[i],c[i],a[i],c[i+1],False)
-    dihedral3 = dihedral(a[i],c[i],b[i],c[i+1],False)
-    print(dihedral1, dihedral2, dihedral3)
+# for i in range(len(c)-1):
+#     dihedral1 = dihedral(b[i],c[i],c[i+1],b[i+1],False)
+#     dihedral2 = dihedral(b[i],c[i],a[i],c[i+1],False)
+#     dihedral3 = dihedral(a[i],c[i],b[i],c[i+1],False)
+#     print(dihedral1, dihedral2, dihedral3)
 
 for i in range(len(c)-2):
     angle1 = dihedral(c[i], c[i+1], b[i+1], c[i+2],False)
     angle2 = dihedral(c[i], c[i+1], a[i+1], c[i+2],False)
     print(angle1, angle2)
+
+len(c)
