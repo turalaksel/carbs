@@ -37,6 +37,35 @@ def orthogonal(u):
     orth /= np.linalg.norm(orth)  # normalize it
     return(orth)
 
+def calculateCoM(list_of_positions):
+    '''
+    Given a list of arrays containing particle positions (vector3)
+    Return the center of mass (vector3) of the system of particles
+    Assumes equal masses
+    '''
+    center = np.average(np.asarray(positions)[:,:3], axis=0)
+    return(center)
+
+def calculateMomentInertia(list_of_positions):
+    '''
+    Given a list of arrays containing particle positions (vector3)
+    Return the moment of inertia (vector3) of the system of particles
+    Assumes equal masses
+    '''
+    inertia = np.array([0., 0., 0.])
+    center = calculateCoM(positions)
+    for p, pos in enumerate(positions):
+        shifted_pos = pos - center
+        new_inertia = np.multiply(shifted_pos, shifted_pos)
+        inertia = inertia + new_inertia
+    #re-scale particle masses so that body is not hugely slow
+    #this needs to be tested
+    inertia /= p
+    return(inertia)
+
+###############################
+# Useful Quaternion Functions #
+###############################
 def vectorQuaternion(u,v):
     cross = np.cross(u,v)
     if np.dot(u, v) < -0.999999:
@@ -52,9 +81,6 @@ def testQuaternion(u,my_quat):
     rotated_vector = my_quat * quat.quaternion(*u) * np.conjugate(my_quat)
     return([rotated_vector.x,rotated_vector.y,rotated_vector.z])
 
-###############################
-# Useful Quaternion Functions #
-###############################
 #from https://stackoverflow.com/questions/16648452/calculating-quaternion-for-transformation-between-2-3d-cartesian-coordinate-syst
 def systemQuaternion(lst1,lst2,matchlist=None):
     '''
@@ -98,9 +124,3 @@ def systemQuaternion(lst1,lst2,matchlist=None):
     my_quat= vectors[:,w.index(mw)]
     my_quat=np.array(my_quat).reshape(-1,).tolist()
     return quat.quaternion(*my_quat)
-
-new_quat = systemQuaternion(np.array([[1,0,0],[0,1,0],[0,0,1]]),np.array([[1,0,0],[0,-1,0],[0,0,-1]]))
-
-new_quat
-
-testQuaternion(np.array([0,0,1]),new_quat)

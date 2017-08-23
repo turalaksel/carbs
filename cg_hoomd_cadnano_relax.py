@@ -234,32 +234,6 @@ def separateOrigamiParts(part):
         bodies[body_index].update(vh_connections)
     return(bodies)
 
-def calculateCoM(positions):
-    '''
-    Given a list of arrays containing particle positions (vector3)
-    Return the center of mass (vector3) of the system of particles
-    Assumes equal masses
-    '''
-    center = np.average(np.asarray(positions)[:,:3], axis=0)
-    return(center)
-
-def calculateMomentInertia(positions):
-    '''
-    Given a list of arrays containing particle positions (vector3)
-    Return the moment of inertia (vector3) of the system of particles
-    Assumes equal masses
-    '''
-    inertia = np.array([0., 0., 0.])
-    center = calculateCoM(positions)
-    for p, pos in enumerate(positions):
-        shifted_pos = pos - center
-        new_inertia = np.multiply(shifted_pos, shifted_pos)
-        inertia = inertia + new_inertia
-    #re-scale particle masses so that body is not hugely slow
-    #this needs to be tested
-    inertia /= p
-    return(inertia)
-
 def populateBodiesNuclAndVhs(nucleotides_list_of_list):
     '''
     Given a list of oligos, each composed of a list of strands
@@ -294,8 +268,8 @@ def populateBody(nucleotides_list_of_list):
 
     for body in bodies:
         positions = [nucl.position[1] for nucl in body.nucleotides]
-        body.com_position = calculateCoM(positions)
-        body.moment_inertia = calculateMomentInertia(positions)
+        body.com_position = vTools.calculateCoM(positions)
+        body.moment_inertia = vTools.calculateMomentInertia(positions)
         body.com_quaternion = [1., 0., 0., 0.]
     return(bodies)
 
