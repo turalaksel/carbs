@@ -13,8 +13,8 @@ com_positions = [fromPDB.nucleotideCofM(n) for n in chains[0].nucleotides]
 com = np.average(np.asarray(com_positions)[:,:3], axis=0)
 com_positions = np.asarray(com_positions) - com
 
-bead_positions = [(b.position[0][0],b.position[0][1],b.position[0][2]) for b in chains[0].nucleotides[0].beads]
-bead_positions
+bead_positions = [(b.position[0][0],b.position[0][1],b.position[0][2]) \
+    for b in chains[0].nucleotides[1].beads]
 
 com = np.average(np.asarray(bead_positions)[:,:3], axis=0)
 bead_positions = np.asarray(bead_positions) - com
@@ -23,11 +23,13 @@ bead_positions = np.asarray(bead_positions) - com
 context.initialize("");
 
 snapshot = data.make_snapshot(N = n_nts,
-                              box = hoomd.data.boxdim(Lx=120, Ly=120, Lz=120),
+                              box = hoomd.data.boxdim(Lx=150, Ly=150, Lz=150),
                               particle_types = types,
                               bond_types = ['polymer']);
 
 snapshot.particles.position[:] = com_positions
+
+snapshot.particles.moment_inertia[:] = [[100,100,100]]*n_nts
 
 snapshot.particles.typeid[:] = [0];
 
@@ -45,10 +47,8 @@ rigid = hoomd.md.constrain.rigid();
 
 #can we get the quaternion of each base in the json?
 rigid.set_param('C1',
-                types=['A']*18,
+                types=['A']*22,
                 positions = bead_positions
-                # positions=[(-0.4,0,0),(-0.3,0,0),(-0.2,0,0),(-0.1,0,0),
-                #            (0.1,0,0),(0.2,0,0),(0.3,0,0),(0.4,0,0)]
                            );
 
 rigid.create_bodies()
@@ -60,11 +60,21 @@ lj.set_params(mode='shift')
 
 lj.pair_coeff.set(['C1', 'A'], ['C1', 'A'], epsilon=1.0, sigma=1.0)
 
+nl.reset_exclusions(exclusions = []);
 
 harmonic = hoomd.md.bond.harmonic();
-harmonic.bond_coeff.set('polymer', k=10.0, r0=5);
+harmonic.bond_coeff.set('polymer', k=20.0, r0=7);
 
-hoomd.md.integrate.mode_standard(dt=0.005);
+def harmonic(theta, kappa, theta0):
+   V = 0.5 * kappa * (theta-theta0)**2;
+   F = -kappa*(theta-theta0);
+   return (V, F)
+
+dtable = hoomd.md.dihedral.table(width=1000)
+dtable.dihedral_coeff.set('polymer', func=harmonic, coeff=dict(kappa=3000, theta_0=0.))
+
+
+hoomd.md.integrate.mode_standard(dt=0.005, aniso=True);
 
 rigid = group.rigid_center();
 hoomd.md.integrate.langevin(group=rigid, kT=0.5, seed=42);
