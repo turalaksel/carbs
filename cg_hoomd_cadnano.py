@@ -11,7 +11,7 @@ import vector_tools as vTools
 
 app = cadnano.app()
 doc = app.document = Document()
-doc.readFile('input/6hb.json');
+doc.readFile('input/6hb_long.json');
 
 part = doc.activePart()
 oligos = part.oligos()
@@ -23,7 +23,7 @@ staple_oligos = oligos_sorted_by_length[1:]
 oligos_array = [longest_oligo] + [staple for staple in staple_oligos]
 
 ##################################
-#some helper functions for cadnano
+#  Helper functions for cadnano  #
 ##################################
 def oligoHelperList(oligo):
     '''
@@ -31,13 +31,6 @@ def oligoHelperList(oligo):
     (strand, strand direction, vh id, index)
     for each nucleotide. List is oriented 5' to 3' and ends back
     at 1st particle if oligo is circular.
-
-    Args:
-        oligo
-
-    Returns:
-        list containing strand, strand direction, vh id, and index
-
     '''
 
     generator = oligo.strand5p().generator3pStrand()
@@ -71,12 +64,15 @@ class nucleotide:
     '''
     def __init__(self):
         self.direction  = 1 #1 is fwd, -1 is reverse
+        self.global_pts = [] #backbone, sidechain and aux points in global frame
         self.index      = []
         self.position   = []
         self.quaternion = []
         self.strand	    = []
-        self.vectors    = []
+        self.vectors    = [] #to be used for quaternion calc
         self.vh  	    = []
+    def add_global_pts(self, pts):
+        self.global_pts.append(pts)
     def add_index(self, index):
         self.index.append(index)
     def add_position(self, position):
@@ -98,7 +94,7 @@ def populateNucleotides(oligo):
         nucl = nucleotide()
         nucl.direction = direction
         nucl.add_index(index)
-        nucl.add_position(coordinates[1]) #axis / side-chain position
+        nucl.add_position(coordinates[1]) #axis (side-chain) position
         nucl.add_position(coordinates[1 + direction]) #fwd or rev backbone vector
         nucl.add_strand(strand)
         nucl.add_vh(vh)
@@ -148,8 +144,9 @@ def generateVectorsandQuaternions(oligos_array):
                          aux_vector_a_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_a_1+np.array([0.00001,0,0])), \
                          aux_vector_b_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_b_1+np.array([0.00001,0,0])))
 
-            nucl_quaternion = vTools.systemQuaternion(vect_list_0, vect_list_1)
             nucl.add_vectors(vect_list_1)
+            nucl.add_global_pts([backbone_1, axis_1, aux_vector_a_1 + backbone_1])
+            nucl_quaternion = vTools.systemQuaternion(vect_list_0, vect_list_1)
             nucl.add_quaternion(nucl_quaternion.w)
             nucl.add_quaternion(nucl_quaternion.x)
             nucl.add_quaternion(nucl_quaternion.y)
@@ -215,38 +212,40 @@ rigid = md.constrain.rigid();
 rigid.set_param('backbone', types=['sidechain','aux'], positions = [0.9*nucl0.vectors[0][0], 0.4*nucl0.vectors[0][1]]);
 rigid.create_bodies()
 
-#fene / harmonic
+#harmonic
 harmonic1 = md.bond.harmonic()
-harmonic1.bond_coeff.set('backbone', k=10.0, r0=0.75)
+harmonic1.bond_coeff.set('backbone', k=1.0, r0=0.75)
 
-# dihedrals
+#dihedrals
 def harmonicAngle(theta, kappa, theta0):
    V = 0.5 * kappa * (theta-theta0)**2;
    F = -kappa*(theta-theta0);
    return (V, F)
 
-# for chain in range(len(list_of_list_of_nucleotides)):
-#     for nucl in range(len(list_of_list_of_nucleotides[chain]) - 2):
-#         chain_length = len(list_of_list_of_nucleotides[chain])
-#         sidechain_1 = total_num_nucl + 2*chain*chain_length + 2*nucl
-#         aux_1 = total_num_nucl + 2*chain*chain_length + 2*nucl + 1
-#         bckbone_1 = chain*chain_length + nucl
-#         sidechain_2 = total_num_nucl + 2*chain*chain_length + 2*nucl + 2
-#         aux_2 = total_num_nucl + 2*chain*chain_length + 2*nucl + 3
-#         bckbone_2 = chain*chain_length + nucl + 1
-#
-#         system.dihedrals.add('dihedral1',  aux_1, bckbone_1, bckbone_2, aux_2)
-#         system.dihedrals.add('dihedral21', aux_1, bckbone_1, sidechain_1, bckbone_2)
-#         system.dihedrals.add('dihedral22', aux_2, bckbone_2, sidechain_2, bckbone_1)
-#         system.dihedrals.add('dihedral31', sidechain_1, bckbone_1, aux_1, bckbone_2)
-#         system.dihedrals.add('dihedral32', sidechain_2, bckbone_2, aux_2, bckbone_1)
-#
-# dtable = md.dihedral.table(width=1000)
-# dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=20, theta0=-0.33))
-# dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=20, theta0=+1.23)) #1.33
-# dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=20, theta0=-1.23))
-# dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=20, theta0=-1.67)) #1.57
-# dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=20, theta0=+1.67))
+for chain in range(len(list_of_list_of_nucleotides)):
+    for nucl in range(len(list_of_list_of_nucleotides[chain]) - 2):
+        chain_length = len(list_of_list_of_nucleotides[chain])
+
+        sidechain_1 = total_num_nucl + 2*chain*chain_length + 2*nucl
+        aux_1 = total_num_nucl + 2*chain*chain_length + 2*nucl + 1
+        bckbone_1 = chain*chain_length + nucl
+
+        sidechain_2 = total_num_nucl + 2*chain*chain_length + 2*nucl + 2
+        aux_2 = total_num_nucl + 2*chain*chain_length + 2*nucl + 3
+        bckbone_2 = chain*chain_length + nucl + 1
+
+        system.dihedrals.add('dihedral1',  sidechain_1, bckbone_1, bckbone_2, sidechain_2)
+        system.dihedrals.add('dihedral21', sidechain_1, bckbone_1, aux_1, bckbone_2)
+        system.dihedrals.add('dihedral22', sidechain_2, bckbone_2, aux_2, bckbone_1)
+        system.dihedrals.add('dihedral31', aux_1, bckbone_1, sidechain_1, bckbone_2)
+        system.dihedrals.add('dihedral32', aux_2, bckbone_2, sidechain_2, bckbone_1)
+
+dtable = md.dihedral.table(width=1000)
+dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=20, theta0=-0.28))
+dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=20, theta0=+1.30)) #1.33
+dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=20, theta0=-1.30))
+dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=20, theta0=-1.57)) #1.57
+dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=20, theta0=+1.57))
 
 
 # fix particle quaternions
