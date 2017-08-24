@@ -102,6 +102,14 @@ def populateGlobalNuclMatrix(active_part):
     bases_length = active_part.getVirtualHelix(0).getSize()
     global_nucl_matrix = [[[[] for k in range(2)] for i in range(bases_length)] for j in range(vhs_length)]
 
+def getNucleotide(nucl_pointers):
+    '''
+    Given a tuple of pointers in the form [vh, index, is_fwd],
+    Returns the global nucleotide referent to the pointers
+    '''
+    [vh, index, is_fwd] = nucl_pointers
+    return(global_nucl_matrix[vh][index][is_fwd])
+
 def populateBasicNucleotideAttributes(oligo, active_part):
     '''
     Given an oligo, returns a list of strands,
@@ -232,15 +240,18 @@ def connection3p(strand):
     '''
     global global_connections_pairs
     if strand.connection3p() != None:
-            vh1 = strand.idNum()
-            index2 = strand.connection3p().idx5Prime()
-            vh2 = strand.connection3p().idNum()
-            index1 = strand.connection3p().connection5p().idx3Prime()
-            distance = distanceBetweenVhs(vh1, index1, vh2, index2)
+            vh_1 = strand.idNum()
+            index_1 = strand.idx3Prime()
+            vh_2 = strand.connection3p().idNum()
+            index_2 = strand.connection3p().idx5Prime()
+            distance = distanceBetweenVhs(vh_1, index_1, vh_2, index_2)
             if distance < 6.0:
-                return(vh2)
+                return(vh_2)
             else:
-                global_connections_pairs.append([[vh1, index1], [vh2, index2]])
+                is_fwd_1 = int(strand.isForward())
+                is_fwd_2 = int(strand.connection3p().isForward())
+                global_connections_pairs.append([[vh_1, index_1, is_fwd_1], \
+                                                 [vh_2, index_2, is_fwd_2]])
 
 def connection5p(strand):
     '''
@@ -249,15 +260,18 @@ def connection5p(strand):
     '''
     global global_connections_pairs
     if strand.connection5p() != None:
-            vh1 = strand.idNum()
-            index2 = strand.connection5p().idx3Prime()
-            vh2 = strand.connection5p().idNum()
-            index1 = strand.connection5p().connection3p().idx5Prime()
-            distance = distanceBetweenVhs(vh1, index1, vh2, index2)
+            vh_1 = strand.idNum()
+            index_1 = strand.idx5Prime()
+            vh_2 = strand.connection5p().idNum()
+            index_2 = strand.connection5p().idx3Prime()
+            distance = distanceBetweenVhs(vh_1, index_1, vh_2, index_2)
             if distance < 6.0:
-                return(vh2)
+                return(vh_2)
             else:
-                global_connections_pairs.append([[vh1, index1], [vh2, index2]])
+                is_fwd_1 = int(strand.isForward())
+                is_fwd_2 = int(strand.connection5p().isForward())
+                global_connections_pairs.append([[vh_1, index_1, is_fwd_1], \
+                                                 [vh_2, index_2, is_fwd_2]])
 
 def calculateConnections(vh):
     '''
@@ -350,7 +364,6 @@ def populateBody(oligos_helper_list):
         body.com_quaternion = [1., 0., 0., 0.]
     return(bodies)
 
-
 ###################################
 # start cadnano and read input file
 ###################################
@@ -366,7 +379,8 @@ populateAllNucleotideAttributes(oligos_helper_list, part)
 
 bodies = populateBody(oligos_helper_list)
 
-bodies[5].vhs
+global_connections_pairs[0]
+
 
 
 ##################################
