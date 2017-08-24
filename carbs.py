@@ -2,7 +2,7 @@ from os import path
 import numpy as np
 import cadnano
 from cadnano.document import Document
-import vector_tools as vTools #needed for quaternion math and other vector calculations
+import vector_tools as vTools #needed for vector / quaternion calculations
 
 ####### USER DEFINED AND GLOBAL VARIABLES ######
 INPUT_FILENAME = 'input/tripod.json'
@@ -21,16 +21,16 @@ class Nucleotide:
     Attributes: index, position, strand, vh
     '''
     def __init__(self):
-        self.direction  = 1  #1 is fwd, -1 is reverse
+        self.direction  = 1    #1 is fwd, -1 is reverse
         self.global_pts = None # backbone, sidechain and aux points in global frame
         self.index      = None # z position in cadnano's unit
         self.body       = None # body this nucl belongs to (for relaxation)
         self.ext_conn   = None # vh and id of nucleotide connected in other body
         self.position   = None # positions of axis (sidechain) and backbone ptcls
-        self.quaternion = None
+        self.quaternion = None # quaternion orientation for this nucleotide
         self.strand	    = None # strand #
         self.vectors    = None # orth vectors in the body ref. frame for quat calc
-        self.vh  	    = None
+        self.vh  	    = None # virtual helix this nucleotide belongs to
 
 class Body:
     '''
