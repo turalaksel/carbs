@@ -54,9 +54,8 @@ class Body:
 def oligoHelperList(oligo):
     '''
     Given an oligo, returns the following list of useful properties
-    (strand, strand direction, vh id, index)
-    for each nucleotide. List is oriented 5' to 3' and ends back
-    at 1st particle if oligo is circular.
+    (strand, strand direction, virtual_helix_id, index)
+    for each nucleotide. List is oriented 5' to 3'
     '''
     generator = oligo.strand5p().generator3pStrand()
     oligo_helper_list = []
@@ -96,52 +95,82 @@ def populateGlobalNuclMatrix(active_part):
     Creates an empty matrix of len = vh_length x index_length
     to be populated with all nucleotides in part
     This will be the global reference to any nucleotide
+    via global_nucl_matrix[vh][index][rev or fwd]
     '''
     global global_nucl_matrix
     vhs_length = len(list(active_part.getIdNums()))
     bases_length = active_part.getVirtualHelix(0).getSize()
-    global_nucl_matrix = [[[] for i in range(bases_length)] for j in range(vhs_length)]
+    global_nucl_matrix = [[[[] for k in range(2)] for i in range(bases_length)] for j in range(vhs_length)]
 
-def populateBasicNucleotideAttributes(oligo):
+def populateBasicNucleotideAttributes(oligo, active_part):
     '''
     Given an oligo, returns a list of strands,
-    each containing the nucleotides that make up such strand
+    each containing the pointers ([vh][index][is_fwd]) to the
+    nucleotides making up such strand and populate nucleotides matrix
+    with basic attributes (direction, index, position, strand, vh)
     '''
+    global global_nucl_matrix
+    if global_nucl_matrix == []:
+        populateGlobalNuclMatrix(active_part) #start by pre-populating global var
+
     strand_list = []
-    for strands in oligoHelperList(oligo):
+    for helper_strands in oligoHelperList(oligo):
         nucleotides_list = []
-        for [strand, direction, vh, index] in strands:
+        for [strand, direction, vh, index] in helper_strands:
             coordinates = findCoordinates(vh, index)
+            is_fwd = int((direction + 1)/2)
             nucl = Nucleotide()
             nucl.direction = direction
             nucl.index = index
             nucl.position = [coordinates[1], coordinates[1 + direction]] #side-chain, bckbone position
             nucl.strand = strand
             nucl.vh = vh
-            nucleotides_list.append(nucl)
+            global_nucl_matrix[vh][index][is_fwd] = nucl
+
+            nucleotides_list.append([vh, index, is_fwd])
         strand_list.append(nucleotides_list)
     return(strand_list)
 
-def listOflistsOfNucleotides(oligos_array):
-    nucl_list_list = []
-    for oligo in oligos_array:
-        strand_list = populateBasicNucleotideAttributes(oligo)
-        nucl_list_list.append(strand_list)
-    return(nucl_list_list)
-
-def populateAllNucleotideAttributes(oligos_array, active_part):
+def createOligosList(oligos_array, active_part):
     '''
-    Given an array of oligos, fills in nucleotide attributes
+    Given an array of oligos in part,
+    returns a list of oligos, each containing
+    a list of strands, each containing a list of nucleotides
+    making up the part.
     '''
     global global_nucl_matrix
-    populateGlobalNuclMatrix(active_part)
+    oligosList = []
+    for oligo in oligos_array:
+        strand_list = populateBasicNucleotideAttributes(oligo, active_part)
+        oligosList.append(strand_list)
+    return(oligosList)
 
-    nucl_list_list = listOflistsOfNucleotides(oligos_array)
+def translateIndices(oligos_helper_list, i, j, k):
+    '''
+    Oligos helper list gives a tuple list of pointers
+    of the type [vh, index, is_fwd] which are needed to
+    reference nucleotides in global_nucl_matrix
+    this function translates oligo_helper_list into
+    indices to be used by global_nucl_matrix
+    '''
+    [vh, index, is_fwd] = oligos_helper_list[i][j][k]
+    return([vh, index, is_fwd])
 
-    for o, oligo in enumerate(nucl_list_list):
+def populateAllNucleotideAttributes(oligos_helper_list, active_part):
+    '''
+    Given an array of oligos, fills the remaining nucleotide attributes:
+    vectors, quaternion, global_pts
+    '''
+    global global_nucl_matrix
+
+    for o, oligo in enumerate(oligos_helper_list):
         for s, strand in enumerate(oligo):
-            [axis_0, backbone_0] = nucl_list_list[0][0][0].position
-            [axis_1, backbone_1] = nucl_list_list[0][0][1].position
+
+            [vh_0, index_0, is_fwd_0] = translateIndices(oligos_helper_list, 0, 0, 0)
+            [vh_1, index_1, is_fwd_1] = translateIndices(oligos_helper_list, 0, 0, 1)
+
+            [axis_0, backbone_0] = global_nucl_matrix[vh_0][index_0][is_fwd_0].position
+            [axis_1, backbone_1] = global_nucl_matrix[vh_1][index_1][is_fwd_1].position
 
             base_vector_0 = axis_0 - backbone_0
             backbone_vector_0 = backbone_1 - backbone_0
@@ -152,14 +181,18 @@ def populateAllNucleotideAttributes(oligos_array, active_part):
                          aux_vector_a_0/np.linalg.norm(aux_vector_a_0), \
                          aux_vector_b_0/np.linalg.norm(aux_vector_b_0))
 
-            for n, nucl in enumerate(nucl_list_list[o][s]):
-                [axis_1, backbone_1] = nucl_list_list[o][s][n].position
-                if n < len(nucl_list_list[o][s]) - 1:
-                    [axis_2, backbone_2] = nucl_list_list[o][s][n + 1].position
+            for n, nucl in enumerate(oligos_helper_list[o][s]):
+                [vh_1, index_1, is_fwd_1] = translateIndices(oligos_helper_list, o, s, n)
+                [axis_1, backbone_1] = global_nucl_matrix[vh_1][index_1][is_fwd_1].position
+
+                if n < len(oligos_helper_list[o][s]) - 1:
+                    [vh_2, index_2, is_fwd_2] = translateIndices(oligos_helper_list, o, s, n + 1)
+                    [axis_2, backbone_2] = global_nucl_matrix[vh_2][index_2][is_fwd_2].position
                     base_vector_1 = axis_1 - backbone_1
                     backbone_vector_1 = backbone_2 - backbone_1
-                elif n == len(nucl_list_list[o][s]) - 1:
-                    [axis_2, backbone_2] = nucl_list_list[o][s][n - 1].position
+                elif n == len(oligos_helper_list[o][s]) - 1:
+                    [vh_2, index_2, is_fwd_2] = translateIndices(oligos_helper_list, o, s, n - 1)
+                    [axis_2, backbone_2] = global_nucl_matrix[vh_2][index_2][is_fwd_2].position
                     base_vector_1 = axis_1 - backbone_1
                     backbone_vector_1 = - (backbone_2 - backbone_1)
 
@@ -169,19 +202,19 @@ def populateAllNucleotideAttributes(oligos_array, active_part):
                              aux_vector_a_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_a_1+np.array([0.00001,0,0])), \
                              aux_vector_b_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_b_1+np.array([0.00001,0,0])))
 
-                nucl.vectors = vect_list_1
-                nucl.global_pts = [backbone_1, axis_1, aux_vector_a_1 + backbone_1]
+                this_nucl = global_nucl_matrix[vh_1][index_1][is_fwd_1]
+                this_nucl.vectors = vect_list_1
+                this_nucl.global_pts = [backbone_1, axis_1, aux_vector_a_1 + backbone_1]
                 nucl_quaternion = vTools.systemQuaternion(vect_list_0, vect_list_1)
-                nucl.quaternion = [nucl_quaternion.w, \
-                                  nucl_quaternion.x, \
-                                  nucl_quaternion.y, \
-                                  nucl_quaternion.z]
-                global_nucl_matrix[nucl.vh][nucl.index] = nucl
-    return(nucl_list_list)
+                this_nucl.quaternion = [nucl_quaternion.w, \
+                                        nucl_quaternion.x, \
+                                        nucl_quaternion.y, \
+                                        nucl_quaternion.z]
+    return()
 
-##################################
-# functions needed for relaxation
-##################################
+###################################
+# Functions needed for relaxation #
+###################################
 def distanceBetweenVhs(vh1, index1, vh2, index2):
     '''
     Given 2 points(vh, index), calculates the
@@ -275,37 +308,40 @@ def separateOrigamiParts(part):
         bodies[body_index].update(vh_connections)
     return(bodies)
 
-def populateBodiesNuclAndVhs(nucleotides_list_of_list):
+def populateBodiesNuclAndVhs(oligos_helper_list):
     '''
     Given a list of oligos, each composed of a list of strands
     each composed of a list of nucleotides, find out which body
     each nucleotide belongs to and add it to the corresponding
     body set.
     '''
+    global global_nucl_matrix
+
     vhs_of_body = separateOrigamiParts(part)
     vhs_of_body_list = list(vhs_of_body)
     num_bodies = len(vhs_of_body_list)
     bodies = [Body() for i in range(num_bodies)]
 
-    for chain in nucleotides_list_of_list:
-        for strand in chain:
-            for nucl in strand:
+    for o, oligo in enumerate(oligos_helper_list):
+        for s, strand in enumerate(oligo):
+            for n, nucl in enumerate(strand):
                 # seach in each body for this nucleotides' vh, assign to body
-                body_id = [i for i in range(num_bodies) if nucl.vh in vhs_of_body[i]][0]
-                nucl.body = body_id
-                global_nucl_matrix[nucl.vh][nucl.index] = nucl
-                bodies[body_id].add_nucleotide(nucl)
-                bodies[body_id].add_vh(nucl.vh)
+                [vh_1, index_1, is_fwd_1] = translateIndices(oligos_helper_list, o, s, n)
+                this_nucl = global_nucl_matrix[vh_1][index_1][is_fwd_1]
+                body_id = [i for i in range(num_bodies) if this_nucl.vh in vhs_of_body[i]][0]
+                this_nucl.body = body_id
+                bodies[body_id].add_nucleotide(this_nucl)
+                bodies[body_id].add_vh(this_nucl.vh)
     return(bodies)
 
-def populateBody(nucleotides_list_of_list):
+def populateBody(oligos_helper_list):
     '''
     Given a list of oligos, each composed of a list of strands
     each composed of a list of nucleotides,
     first populate each body's nucleotide and Vh and
     then calculate the other attributes.
     '''
-    bodies = populateBodiesNuclAndVhs(nucleotides_list_of_list)
+    bodies = populateBodiesNuclAndVhs(oligos_helper_list)
 
     for body in bodies:
         positions = [nucl.position[1] for nucl in body.nucleotides]
@@ -325,11 +361,12 @@ doc.readFile(INPUT_FILENAME);
 part = doc.activePart()
 oligos_array = oligosArray(part)
 
-list_of_list_of_nucleotides = populateAllNucleotideAttributes(oligos_array, part)
+oligos_helper_list = createOligosList(oligos_array, part)
+populateAllNucleotideAttributes(oligos_helper_list, part)
 
-bodies = populateBody(list_of_list_of_nucleotides)
+bodies = populateBody(oligos_helper_list)
 
-bodies
+bodies[5].vhs
 
 
 ##################################
