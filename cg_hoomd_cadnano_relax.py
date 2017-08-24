@@ -1,8 +1,6 @@
-import numpy as np
-import argparse
-import sys
-import cadnano
 from os import path
+import numpy as np
+import cadnano
 from cadnano.document import Document
 import vector_tools as vTools #needed for quaternion math and other vector calculations
 
@@ -93,7 +91,22 @@ def findCoordinates(vh, index):
     rev_pts = part.getCoordinates(vh)[2][index]
     return [fwd_pts, axis_pts, rev_pts]
 
+def populateGlobalNuclMatrix(active_part):
+    '''
+    Creates an empty matrix of len = vh_length x index_length
+    to be populated with all nucleotides in part
+    This will be the global reference to any nucleotide
+    '''
+    global global_nucl_matrix
+    vhs_length = len(list(active_part.getIdNums()))
+    bases_length = active_part.getVirtualHelix(0).getSize()
+    global_nucl_matrix = [[[] for i in range(bases_length)] for j in range(vhs_length)]
+
 def populateBasicNucleotideAttributes(oligo):
+    '''
+    Given an oligo, returns a list of strands,
+    each containing the nucleotides that make up such strand
+    '''
     strand_list = []
     for strands in oligoHelperList(oligo):
         nucleotides_list = []
@@ -115,17 +128,6 @@ def listOflistsOfNucleotides(oligos_array):
         strand_list = populateBasicNucleotideAttributes(oligo)
         nucl_list_list.append(strand_list)
     return(nucl_list_list)
-
-def populateGlobalNuclMatrix(active_part):
-    '''
-    Creates an empty matrix of len = vh_length x index_length
-    to be populated with all nucleotides in part
-    This will be the global reference to any nucleotide
-    '''
-    global global_nucl_matrix
-    vhs_length = len(list(active_part.getIdNums()))
-    bases_length = active_part.getVirtualHelix(0).getSize()
-    global_nucl_matrix = [[[] for i in range(bases_length)] for j in range(vhs_length)]
 
 def populateAllNucleotideAttributes(oligos_array, active_part):
     '''
@@ -205,8 +207,7 @@ def connection3p(strand):
             if distance < 6.0:
                 return(vh2)
             else:
-                global_connections_pairs.append([vh1, index1, vh2, index2])
-                # global_connections_pairs.append(distance)
+                global_connections_pairs.append([[vh1, index1], [vh2, index2]])
 
 def connection5p(strand):
     '''
@@ -223,8 +224,7 @@ def connection5p(strand):
             if distance < 6.0:
                 return(vh2)
             else:
-                global_connections_pairs.append([vh1, index1, vh2, index2])
-                # global_connections_pairs.append(distance)
+                global_connections_pairs.append([[vh1, index1], [vh2, index2]])
 
 def calculateConnections(vh):
     '''
@@ -330,7 +330,6 @@ list_of_list_of_nucleotides = populateAllNucleotideAttributes(oligos_array, part
 bodies = populateBody(list_of_list_of_nucleotides)
 
 bodies
-global_connections_pairs
 
 
 ##################################

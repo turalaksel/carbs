@@ -1,9 +1,11 @@
 # CARBS
+
+![CARBS temp logo](/images/carbs.jpg)
 ## About
 CARBS is a python wrapper for running CAdnano Rigid Body Simulations with HOOMD-blue
 
 ## Authors
-Pablo F. Damasceno (pablo.damasceno  at ucsf.edu)
+Pablo F. Damasceno (pablo.damasceno-at-ucsf-edu)
 San Francisco - 2017
 
 ## Dependencies
