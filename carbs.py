@@ -10,11 +10,11 @@ RELAX = True
 
 global_nucl_matrix = []
 global_connections_pairs = []
-###############################################
 
-##################################
-#  Helper functions for cadnano  #
-##################################
+########### helper #############
+# Helper functions for cadnano #
+################################
+
 class Nucleotide:
     '''
     Fixed attributes of a nucleotide
@@ -218,11 +218,11 @@ def populateAllNucleotideAttributes(oligos_helper_list, active_part):
                                         nucl_quaternion.x, \
                                         nucl_quaternion.y, \
                                         nucl_quaternion.z]
-    return()
 
-###################################
-# Functions needed for relaxation #
-###################################
+############### relax ################
+## Functions needed for relaxation  ##
+######################################
+
 def distanceBetweenVhs(vh1, index1, vh2, index2):
     '''
     Given 2 points(vh, index), calculates the
@@ -250,8 +250,10 @@ def connection3p(strand):
             else:
                 is_fwd_1 = int(strand.isForward())
                 is_fwd_2 = int(strand.connection3p().isForward())
-                global_connections_pairs.append([[vh_1, index_1, is_fwd_1], \
-                                                 [vh_2, index_2, is_fwd_2]])
+                conn_pointer_1 = [vh_1, index_1, is_fwd_1]
+                conn_pointer_2 = [vh_2, index_2, is_fwd_2]
+                if [conn_pointer_2, conn_pointer_1] not in global_connections_pairs:
+                    global_connections_pairs.append([conn_pointer_1, conn_pointer_2])
 
 def connection5p(strand):
     '''
@@ -270,8 +272,10 @@ def connection5p(strand):
             else:
                 is_fwd_1 = int(strand.isForward())
                 is_fwd_2 = int(strand.connection5p().isForward())
-                global_connections_pairs.append([[vh_1, index_1, is_fwd_1], \
-                                                 [vh_2, index_2, is_fwd_2]])
+                conn_pointer_1 = [vh_1, index_1, is_fwd_1]
+                conn_pointer_2 = [vh_2, index_2, is_fwd_2]
+                if [conn_pointer_2, conn_pointer_1] not in global_connections_pairs:
+                    global_connections_pairs.append([conn_pointer_1, conn_pointer_2])
 
 def calculateConnections(vh):
     '''
@@ -364,7 +368,25 @@ def populateBody(oligos_helper_list):
         body.com_quaternion = [1., 0., 0., 0.]
     return(bodies)
 
-###################################
+def findNuclPosition(nucl_pointer, bodies_list, global_ref = True):
+    '''
+    Given a nucleotide pointer = [vh, index, is_fwd]
+    and a list of bodies already computed
+    Returns the location of the nucleotide in the body
+    if global = True, returns the location w.r.t.
+    first nucleotide in body = 0
+    '''
+    my_nucl = getNucleotide(nucl_pointer)
+    my_body = my_nucl.body
+    position = [n for n, nucl in enumerate(bodies_list[my_body].nucleotides) \
+                if nucl == my_nucl][0]
+    if global_ref:
+        for b in range(my_body):
+            position += len(bodies_list[b].nucleotides)
+
+    return(position)
+
+############# cad #################
 # start cadnano and read input file
 ###################################
 
@@ -376,25 +398,95 @@ oligos_array = oligosArray(part)
 
 oligos_helper_list = createOligosList(oligos_array, part)
 populateAllNucleotideAttributes(oligos_helper_list, part)
-
 bodies = populateBody(oligos_helper_list)
 
-global_connections_pairs[0]
-
-
-
-##################################
+############# hoomd ##############
 #start HOOMD code
 ##################################
-# from hoomd import *
-# from hoomd import md
-#
-# # Start HOOMD
-# context.initialize("");
-#
-# num_rigid_bodies = len(bodies)
-#
-# particle_positions = [nucl.positions for ]
+from hoomd import *
+from hoomd import md
+
+# Start HOOMD
+context.initialize("");
+
+num_rigid_bodies = len(bodies)
+
+bodies_com_positions = [body.com_position for body in bodies]
+bodies_mom_inertia = [body.moment_inertia for body in bodies]
+body_types = ["body"+"_"+str(i) for i in range(num_rigid_bodies)]
+body_types.append('nucleotides')
+
+snapshot = data.make_snapshot(N = num_rigid_bodies,
+                              box = data.boxdim(Lx=200, Ly=200, Lz=300),
+                              particle_types=body_types,
+                              bond_types = ['interbody']);
+
+snapshot.particles.position[:] = bodies_com_positions
+snapshot.particles.moment_inertia[:] = bodies_mom_inertia
+# snapshot.particles.typeid[:] = body_types[:-1];
+
+for i in range(len(bodies)):
+    snapshot.particles.typeid[i] = i
+
+snapshot.particles.velocity[:] = np.random.normal(0.0,
+                                 np.sqrt(0.8 / 1.0), [snapshot.particles.N, 3]);
+
+# Read the snapshot and create neighbor list
+system = init.read_snapshot(snapshot);
+nl = md.nlist.cell();
+
+# Create rigid particles
+rigid = md.constrain.rigid();
+for b, body in enumerate(bodies):
+    body_type = body_types[b]
+    nucl_positions = [nucl.position for nucl in body.nucleotides]
+    # move particles to body reference frame
+    nucl_positions -= body.com_position
+    #clean this up !!
+    nucl_positions = np.reshape(np.array(nucl_positions), (int(len(nucl_positions)*6/3),3))
+
+    rigid.set_param(body_type, \
+                types=['nucleotides']*len(nucl_positions), \
+                positions = nucl_positions); #magic numbers. Check !!!
+
+rigid.create_bodies()
+
+# fix diameters for vizualization
+for i in range(0, num_rigid_bodies):
+    system.particles[i].diameter = 0.8
+for i in range(num_rigid_bodies, len(system.particles), 2):
+    system.particles[i].diameter = 0.3
+    system.particles[i + 1].diameter = 0.1
+
+# ## Interbody bonds
+# bonds = []
+# for conn in global_connections_pairs:
+#     nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
+#     nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
+#     bonds.append([nucl_0_body_location, nucl_1_body_location])
+
+########## INTERACTIONS ############
+# LJ interactions
+wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
+wca.set_params(mode='shift')
+wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
+
+####
+
+########## INTEGRATION ############
+md.integrate.mode_standard(dt=0.005, aniso=True);
+rigid = group.rigid_center();
+md.integrate.langevin(group=rigid, kT=1.2, seed=42);
+########## DUMP & RUN ############
+dump.gsd("output/tripod.gsd",
+               period=100,
+               group=group.all(),
+               static=[],
+               overwrite=True);
+run(1e5);
+
+
+
 
 
 

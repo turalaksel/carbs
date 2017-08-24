@@ -60,7 +60,7 @@ def calculateMomentInertia(list_of_positions):
         inertia = inertia + new_inertia
     #re-scale particle masses so that body is not hugely slow
     #this needs to be tested
-    inertia /= p
+    # inertia /= p
     return(inertia)
 
 ###############################
