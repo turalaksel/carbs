@@ -6,10 +6,13 @@ from os import path
 from cadnano.document import Document
 import vector_tools as vTools #needed for quaternion math and other vector calculations
 
-####### USER DEFINED VARIABLES########
+####### USER DEFINED AND GLOBAL VARIABLES ######
 INPUT_FILENAME = 'input/tripod.json'
 RELAX = True
-######################################
+
+global_nucl_matrix = []
+global_connections_pairs = []
+###############################################
 
 ##################################
 #  Helper functions for cadnano  #
@@ -24,6 +27,7 @@ class Nucleotide:
         self.global_pts = None # backbone, sidechain and aux points in global frame
         self.index      = None # z position in cadnano's unit
         self.body       = None # body this nucl belongs to (for relaxation)
+        self.ext_conn   = None # vh and id of nucleotide connected in other body
         self.position   = None # positions of axis (sidechain) and backbone ptcls
         self.quaternion = None
         self.strand	    = None # strand #
@@ -56,7 +60,6 @@ def oligoHelperList(oligo):
     for each nucleotide. List is oriented 5' to 3' and ends back
     at 1st particle if oligo is circular.
     '''
-
     generator = oligo.strand5p().generator3pStrand()
     oligo_helper_list = []
     for strand in generator:
@@ -71,6 +74,15 @@ def oligoHelperList(oligo):
         oligo_helper_list.append(strand_helper_list)
     return(oligo_helper_list)
 
+def oligosArray(active_part):
+    '''
+    Given a origami part
+    Return an array with all oligos in part sorted by length
+    '''
+    oligos = active_part.oligos()
+    oligos_sorted_by_length = sorted(oligos, key=lambda x: x.length(), reverse=True)
+    return(oligos_sorted_by_length)
+
 def findCoordinates(vh, index):
     '''
     Given a vh and a index, returns (x,y,z)
@@ -81,13 +93,12 @@ def findCoordinates(vh, index):
     rev_pts = part.getCoordinates(vh)[2][index]
     return [fwd_pts, axis_pts, rev_pts]
 
-def populateNucleotides(oligo):
+def populateBasicNucleotideAttributes(oligo):
     strand_list = []
     for strands in oligoHelperList(oligo):
         nucleotides_list = []
         for [strand, direction, vh, index] in strands:
             coordinates = findCoordinates(vh, index)
-
             nucl = Nucleotide()
             nucl.direction = direction
             nucl.index = index
@@ -101,14 +112,28 @@ def populateNucleotides(oligo):
 def listOflistsOfNucleotides(oligos_array):
     nucl_list_list = []
     for oligo in oligos_array:
-        strand_list = populateNucleotides(oligo)
+        strand_list = populateBasicNucleotideAttributes(oligo)
         nucl_list_list.append(strand_list)
     return(nucl_list_list)
 
-def generateVectorsandQuaternions(oligos_array):
+def populateGlobalNuclMatrix(active_part):
+    '''
+    Creates an empty matrix of len = vh_length x index_length
+    to be populated with all nucleotides in part
+    This will be the global reference to any nucleotide
+    '''
+    global global_nucl_matrix
+    vhs_length = len(list(active_part.getIdNums()))
+    bases_length = active_part.getVirtualHelix(0).getSize()
+    global_nucl_matrix = [[[] for i in range(bases_length)] for j in range(vhs_length)]
+
+def populateAllNucleotideAttributes(oligos_array, active_part):
     '''
     Given an array of oligos, fills in nucleotide attributes
     '''
+    global global_nucl_matrix
+    populateGlobalNuclMatrix(active_part)
+
     nucl_list_list = listOflistsOfNucleotides(oligos_array)
 
     for o, oligo in enumerate(nucl_list_list):
@@ -149,10 +174,12 @@ def generateVectorsandQuaternions(oligos_array):
                                   nucl_quaternion.x, \
                                   nucl_quaternion.y, \
                                   nucl_quaternion.z]
-
+                global_nucl_matrix[nucl.vh][nucl.index] = nucl
     return(nucl_list_list)
 
+##################################
 # functions needed for relaxation
+##################################
 def distanceBetweenVhs(vh1, index1, vh2, index2):
     '''
     Given 2 points(vh, index), calculates the
@@ -168,38 +195,52 @@ def connection3p(strand):
     Given a strand, returns the vhelix to which the 3p end
     connects to, if the distance is not too far
     '''
+    global global_connections_pairs
     if strand.connection3p() != None:
             vh1 = strand.idNum()
-            index1 = strand.connection3p().idx5Prime()
+            index2 = strand.connection3p().idx5Prime()
             vh2 = strand.connection3p().idNum()
-            index2 = strand.connection3p().connection5p().idx3Prime()
+            index1 = strand.connection3p().connection5p().idx3Prime()
             distance = distanceBetweenVhs(vh1, index1, vh2, index2)
-            if distance < 10.0:
+            if distance < 6.0:
                 return(vh2)
+            else:
+                global_connections_pairs.append([vh1, index1, vh2, index2])
+                # global_connections_pairs.append(distance)
 
 def connection5p(strand):
     '''
     Given a strand, returns the vhelix to which the 5p end
     connects to, if the distance is not too far
     '''
+    global global_connections_pairs
     if strand.connection5p() != None:
             vh1 = strand.idNum()
-            index1 = strand.connection5p().idx3Prime()
+            index2 = strand.connection5p().idx3Prime()
             vh2 = strand.connection5p().idNum()
-            index2 = strand.connection5p().connection3p().idx5Prime()
+            index1 = strand.connection5p().connection3p().idx5Prime()
             distance = distanceBetweenVhs(vh1, index1, vh2, index2)
-            if distance < 10.0:
+            if distance < 6.0:
                 return(vh2)
+            else:
+                global_connections_pairs.append([vh1, index1, vh2, index2])
+                # global_connections_pairs.append(distance)
 
 def calculateConnections(vh):
     '''
     Given a vh number, returns the set of neighboring vhs,
-    where a neighbor has a staple connection with vh
-    and is closer than dist = 10.0
+    where a neighbor has a *staple* connection with vh
+    that is closer than dist = 10.0
     '''
-    staple_strandSet = part.getStrandSets(vh)[not(vh % 2)]
+    staple_strandSet = part.getStrandSets(vh)[not(vh % 2)] #staple strands only
+    scaffold_strandSet = part.getStrandSets(vh)[(vh % 2)]
     connections = set()
     for strand in staple_strandSet:
+        if connection3p(strand) != None:
+            connections.add(connection3p(strand))
+        if connection5p(strand) != None:
+            connections.add(connection5p(strand))
+    for strand in scaffold_strandSet:
         if connection3p(strand) != None:
             connections.add(connection3p(strand))
         if connection5p(strand) != None:
@@ -223,7 +264,7 @@ def separateOrigamiParts(part):
                 body_index = b
                 break
             elif vh_connections.intersection(body) != set():
-            #one of the connections belong to an existing body
+            #one of the connections belongs to an known body
                 body_index = b
                 break
         if body_index == None: # not vh nor its connections are in known bodies
@@ -252,6 +293,7 @@ def populateBodiesNuclAndVhs(nucleotides_list_of_list):
                 # seach in each body for this nucleotides' vh, assign to body
                 body_id = [i for i in range(num_bodies) if nucl.vh in vhs_of_body[i]][0]
                 nucl.body = body_id
+                global_nucl_matrix[nucl.vh][nucl.index] = nucl
                 bodies[body_id].add_nucleotide(nucl)
                 bodies[body_id].add_vh(nucl.vh)
     return(bodies)
@@ -272,41 +314,43 @@ def populateBody(nucleotides_list_of_list):
         body.com_quaternion = [1., 0., 0., 0.]
     return(bodies)
 
+
 ###################################
 # start cadnano and read input file
 ###################################
-# Read nucleotides data from cadnano
-# Read nucleotides data from cadnano
+
 app = cadnano.app()
 doc = app.document = Document()
 doc.readFile(INPUT_FILENAME);
-
 part = doc.activePart()
-oligos = part.oligos()
+oligos_array = oligosArray(part)
 
-oligos_sorted_by_length = sorted(oligos, key=lambda x: x.length(), reverse=True)
-longest_oligo = oligos_sorted_by_length[0]
-staple_oligos = oligos_sorted_by_length[1:]
-oligos_array = [longest_oligo] + [staple for staple in staple_oligos]
-# calculate list of oligos, each as a list of nucleotides in 5'-3' direction
-list_of_list_of_nucleotides = generateVectorsandQuaternions(oligos_array)
+list_of_list_of_nucleotides = populateAllNucleotideAttributes(oligos_array, part)
+
+bodies = populateBody(list_of_list_of_nucleotides)
+
+bodies
+global_connections_pairs
+
 
 ##################################
 #start HOOMD code
 ##################################
-from hoomd import *
-from hoomd import md
+# from hoomd import *
+# from hoomd import md
+#
+# # Start HOOMD
+# context.initialize("");
+#
+# num_rigid_bodies = len(bodies)
+#
+# particle_positions = [nucl.positions for ]
 
-# Start HOOMD
-context.initialize("");
-
-bodies = populateBody(list_of_list_of_nucleotides)
 
 
 
 
-if RELAX:
-    bodies = populateBody(list_of_list_of_nucleotides)
+
 
 
 
