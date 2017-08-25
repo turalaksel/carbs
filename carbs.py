@@ -400,9 +400,9 @@ oligos_helper_list = createOligosList(oligos_array, part)
 populateAllNucleotideAttributes(oligos_helper_list, part)
 bodies = populateBody(oligos_helper_list)
 
-############# hoomd ##############
-#start HOOMD code
-##################################
+############# hoomd ################################################
+# Start HOOMD code
+####################################################################
 from hoomd import *
 from hoomd import md
 
@@ -419,17 +419,30 @@ body_types.append('nucleotides')
 snapshot = data.make_snapshot(N = num_rigid_bodies,
                               box = data.boxdim(Lx=200, Ly=200, Lz=300),
                               particle_types=body_types,
-                              bond_types = ['interbody']);
+                              bond_types = ['body', 'interbody']);
 
 snapshot.particles.position[:] = bodies_com_positions
 snapshot.particles.moment_inertia[:] = bodies_mom_inertia
-# snapshot.particles.typeid[:] = body_types[:-1];
-
+#particle types
 for i in range(len(bodies)):
     snapshot.particles.typeid[i] = i
 
 snapshot.particles.velocity[:] = np.random.normal(0.0,
                                  np.sqrt(0.8 / 1.0), [snapshot.particles.N, 3]);
+
+# Bonds between connected rigid bodies
+def bodyConnections():
+    connections = []
+    for conn in global_connections_pairs:
+        nucl0 = getNucleotide(conn[0])
+        nucl1 = getNucleotide(conn[1])
+        if [nucl1.body, nucl0.body] and [nucl0.body, nucl1.body] not in connections:
+            connections.append([nucl0.body, nucl1.body])
+    return(connections)
+
+bonds = bodyConnections()
+snapshot.bonds.resize(len(bonds))
+snapshot.bonds.group[:] = bonds
 
 # Read the snapshot and create neighbor list
 system = init.read_snapshot(snapshot);
@@ -444,12 +457,16 @@ for b, body in enumerate(bodies):
     nucl_positions -= body.com_position
     #clean this up !!
     nucl_positions = np.reshape(np.array(nucl_positions), (int(len(nucl_positions)*6/3),3))
-
     rigid.set_param(body_type, \
                 types=['nucleotides']*len(nucl_positions), \
                 positions = nucl_positions); #magic numbers. Check !!!
 
 rigid.create_bodies()
+
+
+harmonic = md.bond.harmonic()
+harmonic.bond_coeff.set('body', k=0.001, r0=10);
+harmonic.bond_coeff.set('interbody', k=0.1, r0=1.0)
 
 # fix diameters for vizualization
 for i in range(0, num_rigid_bodies):
@@ -458,12 +475,13 @@ for i in range(num_rigid_bodies, len(system.particles), 2):
     system.particles[i].diameter = 0.3
     system.particles[i + 1].diameter = 0.1
 
-# ## Interbody bonds
-# bonds = []
-# for conn in global_connections_pairs:
-#     nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
-#     nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
-#     bonds.append([nucl_0_body_location, nucl_1_body_location])
+## Interbody bonds
+for conn in global_connections_pairs:
+    nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
+    nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
+    delta = num_rigid_bodies
+
+    system.bonds.add('interbody', delta + 2*nucl_0_body_location, delta + 2*nucl_1_body_location)
 
 ########## INTERACTIONS ############
 # LJ interactions
@@ -477,6 +495,7 @@ wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**
 md.integrate.mode_standard(dt=0.005, aniso=True);
 rigid = group.rigid_center();
 md.integrate.langevin(group=rigid, kT=1.2, seed=42);
+
 ########## DUMP & RUN ############
 dump.gsd("output/tripod.gsd",
                period=100,
