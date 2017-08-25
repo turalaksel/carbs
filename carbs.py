@@ -412,12 +412,14 @@ context.initialize("");
 num_rigid_bodies = len(bodies)
 
 bodies_com_positions = [body.com_position for body in bodies]
+bodies_com_positions -= np.average(np.asarray(bodies_com_positions)[:,:3], axis=0)
+
 bodies_mom_inertia = [body.moment_inertia for body in bodies]
 body_types = ["body"+"_"+str(i) for i in range(num_rigid_bodies)]
 body_types.append('nucleotides')
 
 snapshot = data.make_snapshot(N = num_rigid_bodies,
-                              box = data.boxdim(Lx=200, Ly=200, Lz=300),
+                              box = data.boxdim(Lx=100, Ly=100, Lz=300),
                               particle_types=body_types,
                               bond_types = ['body', 'interbody']);
 
@@ -446,23 +448,20 @@ snapshot.bonds.group[:] = bonds
 
 # Read the snapshot and create neighbor list
 system = init.read_snapshot(snapshot);
-nl = md.nlist.cell();
+nl = md.nlist.stencil();
 
 # Create rigid particles
 rigid = md.constrain.rigid();
 for b, body in enumerate(bodies):
     body_type = body_types[b]
-    nucl_positions = [nucl.position for nucl in body.nucleotides]
+    nucl_positions = [nucl.position[0] for nucl in body.nucleotides]
     # move particles to body reference frame
     nucl_positions -= body.com_position
-    #clean this up !!
-    nucl_positions = np.reshape(np.array(nucl_positions), (int(len(nucl_positions)*6/3),3))
     rigid.set_param(body_type, \
                 types=['nucleotides']*len(nucl_positions), \
                 positions = nucl_positions); #magic numbers. Check !!!
 
 rigid.create_bodies()
-
 
 harmonic = md.bond.harmonic()
 harmonic.bond_coeff.set('body', k=0.001, r0=10);
@@ -470,10 +469,9 @@ harmonic.bond_coeff.set('interbody', k=0.1, r0=1.0)
 
 # fix diameters for vizualization
 for i in range(0, num_rigid_bodies):
-    system.particles[i].diameter = 0.8
-for i in range(num_rigid_bodies, len(system.particles), 2):
+    system.particles[i].diameter = 4.0
+for i in range(num_rigid_bodies, len(system.particles)):
     system.particles[i].diameter = 0.3
-    system.particles[i + 1].diameter = 0.1
 
 ## Interbody bonds
 for conn in global_connections_pairs:
@@ -481,15 +479,13 @@ for conn in global_connections_pairs:
     nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
     delta = num_rigid_bodies
 
-    system.bonds.add('interbody', delta + 2*nucl_0_body_location, delta + 2*nucl_1_body_location)
+    system.bonds.add('interbody', delta + nucl_0_body_location, delta + nucl_1_body_location)
 
 ########## INTERACTIONS ############
 # LJ interactions
 wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
 wca.set_params(mode='shift')
 wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
-
-####
 
 ########## INTEGRATION ############
 md.integrate.mode_standard(dt=0.005, aniso=True);
@@ -503,8 +499,6 @@ dump.gsd("output/tripod.gsd",
                static=[],
                overwrite=True);
 run(1e5);
-
-
 
 
 
