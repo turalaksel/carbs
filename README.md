@@ -10,3 +10,4 @@ CARBS is a python wrapper for running **CA**dnano **R**igid **B**ody **S**imulat
 ### Dependencies
 - cadnano (https://github.com/cadnano/cadnano2.5)
 - hoomd-blue (http://glotzerlab.engin.umich.edu/hoomd-blue/download.html)
+- numpy quaternion (pip install numpy-quaternion)

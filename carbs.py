@@ -494,7 +494,7 @@ md.integrate.langevin(group=rigid, kT=1.2, seed=42);
 
 ########## DUMP & RUN ############
 dump.gsd("output/tripod.gsd",
-               period=100,
+               period=1e4,
                group=group.all(),
                static=[],
                overwrite=True);
