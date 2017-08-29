@@ -408,10 +408,10 @@ from hoomd import *
 from hoomd import md
 
 # Start HOOMD
-context.initialize("");
+relax_sim = context.SimulationContext();
+MD_sim = context.SimulationContext();
 
-if RELAX:
-
+with relax_sim:
     num_rigid_bodies = len(bodies)
 
     bodies_com_positions = [body.com_position for body in bodies]
@@ -445,6 +445,7 @@ if RELAX:
                 connections.append([nucl0.body, nucl1.body])
         return(connections)
 
+    #create very weak bonds between com that are connected
     bonds = bodyConnections()
     snapshot.bonds.resize(len(bonds))
     snapshot.bonds.group[:] = bonds
@@ -457,7 +458,7 @@ if RELAX:
     rigid = md.constrain.rigid();
     for b, body in enumerate(bodies):
         body_type = body_types[b]
-        nucl_positions = [nucl.position[0] for nucl in body.nucleotides]
+        nucl_positions = [nucl.position[1] for nucl in body.nucleotides]
         # move particles to body reference frame
         nucl_positions -= body.com_position
         rigid.set_param(body_type, \
@@ -497,25 +498,51 @@ if RELAX:
 
     ########## DUMP & RUN ############
     dump.gsd("output/tripod_relax.gsd",
-                   period=7e5,
+                   period=1e5,
                    group=group.all(),
                    static=[],
                    overwrite=True);
-      for i in range(1e5):
-          run(10)
-          all_particle_positions = [system.particles[j].position for j in range(len(system.particles)]
-          com = np.average(np.asarray(all_particle_positions)[:,:3], axis=0)
-          for j in range(len(system.particles):
-              system.particles[j].position -= com
 
-else:
+    run(3e5)
+
+    #update global particle positions and quaternions
+    i = num_rigid_bodies
+    for b, body in enumerate(bodies):
+        for nucl in body.nucleotides:
+            vh = nucl.vh
+            index = nucl.index
+            is_fwd = int((nucl.direction + 1)/2)
+            nucl_position = system.particles[i].position
+
+            nucl_quaternion_new = system.particles[i].orientation
+            nucl_quaternion_new = vTools.quat2Quat(nucl_quaternion_new)
+            nucl_quaternion_old = nucl.quaternion
+            nucl_quaternion_old = vTools.quat2Quat(nucl_quaternion_old)
+            quat = nucl_quaternion_new * nucl_quaternion_old
+            quat = [quat.w, quat.x, quat.y, quat.z]
+            global_nucl_matrix[vh][index][is_fwd].position[1] = nucl_position
+            global_nucl_matrix[vh][index][is_fwd].quaternion = quat
+            i += 1
+
+
+    import pickle
+    with open('global.pckl', 'wb') as f:
+        pickle.dump(global_nucl_matrix, f)
+
+with MD_sim:
+    #read global_nucl_matrix from pickle file
+    import pickle
+    f = open('global.pckl', 'rb')
+    global_nucl_matrix = pickle.load(f)
+    f.close()
+
     num_oligos = len(oligos_list)
     nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
                         for strand in chain for pointer in strand]
     total_num_nucl = len(nucl_positions)
 
     snapshot = data.make_snapshot(N = total_num_nucl,
-                                  box = data.boxdim(Lx=130, Ly=130, Lz=300),
+                                  box = data.boxdim(Lx=180, Ly=180, Lz=300),
                                   particle_types=['backbone','sidechain','aux'],
                                   bond_types = ['backbone','aux_sidechain'],
                                   dihedral_types = ['dihedral1', \
@@ -524,46 +551,6 @@ else:
                                                     'dihedral31',\
                                                     'dihedral32']);
 
-    #update body positions and quaternions (external for now)
-    recorded_positions = [\
-                          (39.74203777608615, 24.002726117377815, 6.27963290681411),\
-                          (27.79363709141586, 21.132626964458193, 18.87161035525623),\
-                          (23.287065559122876, 21.866807528607414, 39.00548137527091),\
-                          (36.44941118566939, 33.16790045902142, 44.12171298748613),\
-                          (-42.460414904679034, 39.958626580840296, 36.975915679082405),\
-                          (-45.7645497261264, 32.46698865902315, 18.610810047507183)]
-    aver_rec_positions = np.average(np.asarray(recorded_positions)[:,:3], axis=0)
-    recorded_positions -= aver_rec_positions
-    recorded_quaternions = [\
-                            (-0.5748919539437534, -0.030037791364421897, -0.10125606693439788, -0.8113841145164588), \
-                            (0.007683868179175468, 0.7972861669659066, 0.5813240701590708, 0.1622900230707644), \
-                            (-0.3733392496165963, 0.3437058466805171, 0.352039341126651, -0.786481021991287), \
-                            (-0.5748112224122692, -0.06556300491340793, -0.7497004508837378, -0.3213141530035013), \
-                            (-0.1551417851900796, 0.4822522907336146, 0.7092172475189463, -0.49028017540164337), \
-                            (-0.09127640166679181, -0.2544309752730835, -0.2108363601046428, -0.9394048789410109)]
-    for i in range(len(bodies)):
-        bodies[i].com_position = recorded_positions[i]
-        bodies[i].com_quaternion = vTools.quat2Quat(recorded_quaternions[i])
-
-    for o, oligo in enumerate(oligos_list):
-        for s, strand in enumerate(oligo):
-            for n, nucl in enumerate(strand):
-                [vh, index, is_fwd] = oligos_list[o][s][n]
-                nucl = getNucleotide([vh, index, is_fwd])
-
-                nucl_body_number = nucl.body
-                old_nucl_quat = vTools.quat2Quat(nucl.quaternion)
-                body_quat = bodies[nucl_body_number].com_quaternion
-                new_nucl_quat = body_quat * old_nucl_quat
-
-                old_nucl_position = nucl.position
-                body_position = bodies[nucl_body_number].com_position
-                new_nucl_position = [old_nucl_position[0] + body_position,\
-                                     old_nucl_position[1] + body_position]
-
-                global_nucl_matrix[vh][index][is_fwd].position = new_nucl_position
-                global_nucl_matrix[vh][index][is_fwd].quaternion = new_nucl_quat
-
     # particle positions, types and moments of inertia
     nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
                         for strand in chain for pointer in strand]
@@ -571,7 +558,7 @@ else:
                         for strand in chain for pointer in strand]
 
     snapshot.particles.position[:] = nucl_positions
-
+    snapshot.particles.orientation[:] = nucl_quaternions
     snapshot.particles.moment_inertia[:] = [[1.,1.,1.]] #not correct. fix it
     snapshot.particles.typeid[:] = [0];
 
@@ -642,20 +629,6 @@ else:
     dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.57))
     dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.57))
 
-    # fix particle quaternions
-    p = 0
-    for o, oligo in enumerate(oligos_list):
-        for s, strand in enumerate(oligo):
-            for n, nucl in enumerate(strand):
-                pointer = oligos_list[o][s][n]
-                my_nucl = getNucleotide(pointer)
-                nucl_quaternion = [my_nucl.quaternion.w,\
-                                   my_nucl.quaternion.x,\
-                                   my_nucl.quaternion.y,\
-                                   my_nucl.quaternion.z]
-                system.particles[p].orientation = nucl_quaternion
-                p += 1
-
     # fix diameters for vizualization
     for i in range(0, total_num_nucl):
         system.particles[i].diameter = 0.8
@@ -679,13 +652,12 @@ else:
     rigid = group.rigid_center();
     # md.integrate.langevin(group=rigid, kT=0.2, seed=42);
     ########## DUMP & RUN ############
-    dump.gsd("output/tripod_post_relax.dcd",
+    dump.gsd("output/tripod_MD.gsd",
                    period=1,
                    group=group.all(),
                    static=[],
                    overwrite=True);
     run(10);
-
 
 
 
