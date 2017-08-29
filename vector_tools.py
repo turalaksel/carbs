@@ -81,12 +81,11 @@ def testQuaternion(u,my_quat):
     rotated_vector = my_quat * quat.quaternion(*u) * np.conjugate(my_quat)
     return([rotated_vector.x,rotated_vector.y,rotated_vector.z])
 
-#from https://stackoverflow.com/questions/16648452/calculating-quaternion-for-transformation-between-2-3d-cartesian-coordinate-syst
 def systemQuaternion(lst1,lst2,matchlist=None):
     '''
+    from https://stackoverflow.com/questions/16648452/calculating-quaternion-for-transformation-between-2-3d-cartesian-coordinate-syst
     Given 2 lists of 3 orthogonal vectors,
     find the quaternion transformation bringing list2 into list1
-
     '''
     if not matchlist:
          matchlist=range(len(lst1))
@@ -124,3 +123,15 @@ def systemQuaternion(lst1,lst2,matchlist=None):
     my_quat= vectors[:,w.index(mw)]
     my_quat=np.array(my_quat).reshape(-1,).tolist()
     return quat.quaternion(*my_quat)
+
+def quat2Quat(quat_list):
+    '''
+    numpy.quaternion only accepts quaternion in the form quaternion(x,y,z,w)
+    This function transforms a quaternion list l = [x,y,z,w] into a
+    numpy.quaternion my_quat = quaternion(x,y,z,w)
+    '''
+    my_quat = quat.quaternion(quat_list[0],\
+                              quat_list[1],\
+                              quat_list[2],\
+                              quat_list[3])
+    return(my_quat)
