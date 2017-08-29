@@ -1,4 +1,4 @@
-# Get CARBS
+# get CARBS
 
 ![CARBS temp logo](/images/carbs.jpg)
 ### About
