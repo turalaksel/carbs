@@ -407,257 +407,260 @@ bodies = populateBody(oligos_list)
 from hoomd import *
 from hoomd import md
 
-# Start HOOMD
+# Start HOOMD in two different contexts
+context.initialize("");
 relax_sim = context.SimulationContext();
 MD_sim = context.SimulationContext();
 
-with relax_sim:
-    num_rigid_bodies = len(bodies)
+if RELAX == True:
+    with relax_sim:
+        num_rigid_bodies = len(bodies)
 
-    bodies_com_positions = [body.com_position for body in bodies]
-    bodies_com_positions -= np.average(np.asarray(bodies_com_positions)[:,:3], axis=0)
+        bodies_com_positions = [body.com_position for body in bodies]
+        bodies_com_positions -= np.average(np.asarray(bodies_com_positions)[:,:3], axis=0)
 
-    bodies_mom_inertia = [body.moment_inertia for body in bodies]
-    body_types = ["body"+"_"+str(i) for i in range(num_rigid_bodies)]
-    body_types.append('nucleotides')
+        bodies_mom_inertia = [body.moment_inertia for body in bodies]
+        body_types = ["body"+"_"+str(i) for i in range(num_rigid_bodies)]
+        body_types.append('nucleotides')
 
-    snapshot = data.make_snapshot(N = num_rigid_bodies,
-                                  box = data.boxdim(Lx=100, Ly=100, Lz=300),
-                                  particle_types=body_types,
-                                  bond_types = ['body', 'interbody']);
+        snapshot = data.make_snapshot(N = num_rigid_bodies,
+                                      box = data.boxdim(Lx=120, Ly=120, Lz=300),
+                                      particle_types=body_types,
+                                      bond_types = ['body', 'interbody']);
 
-    snapshot.particles.position[:] = bodies_com_positions
-    snapshot.particles.moment_inertia[:] = bodies_mom_inertia
-    #particle types
-    for i in range(len(bodies)):
-        snapshot.particles.typeid[i] = i
+        snapshot.particles.position[:] = bodies_com_positions
+        snapshot.particles.moment_inertia[:] = bodies_mom_inertia
+        #particle types
+        for i in range(len(bodies)):
+            snapshot.particles.typeid[i] = i
 
-    snapshot.particles.velocity[:] = np.random.normal(0.0,
-                                     np.sqrt(0.8 / 1.0), [snapshot.particles.N, 3]);
+        snapshot.particles.velocity[:] = np.random.normal(0.0,
+                                         np.sqrt(0.8 / 1.0), [snapshot.particles.N, 3]);
 
-    # Bonds between connected rigid bodies
-    def bodyConnections():
-        connections = []
+        # Bonds between connected rigid bodies
+        def bodyConnections():
+            connections = []
+            for conn in global_connections_pairs:
+                nucl0 = getNucleotide(conn[0])
+                nucl1 = getNucleotide(conn[1])
+                if [nucl1.body, nucl0.body] and [nucl0.body, nucl1.body] not in connections:
+                    connections.append([nucl0.body, nucl1.body])
+            return(connections)
+
+        #create very weak bonds between com that are connected
+        bonds = bodyConnections()
+        snapshot.bonds.resize(len(bonds))
+        snapshot.bonds.group[:] = bonds
+
+        # Read the snapshot and create neighbor list
+        system = init.read_snapshot(snapshot);
+        nl = md.nlist.stencil();
+
+        # Create rigid particles
+        rigid = md.constrain.rigid();
+        for b, body in enumerate(bodies):
+            body_type = body_types[b]
+            nucl_positions = [nucl.position[1] for nucl in body.nucleotides]
+            # move particles to body reference frame
+            nucl_positions -= body.com_position
+            rigid.set_param(body_type, \
+                        types=['nucleotides']*len(nucl_positions), \
+                        positions = nucl_positions); #magic numbers. Check !!!
+
+        rigid.create_bodies()
+
+        harmonic = md.bond.harmonic()
+        harmonic.bond_coeff.set('body', k=0.001, r0=10);
+        harmonic.bond_coeff.set('interbody', k=0.1, r0=1.0)
+
+        # fix diameters for vizualization
+        for i in range(0, num_rigid_bodies):
+            system.particles[i].diameter = 4.0
+        for i in range(num_rigid_bodies, len(system.particles)):
+            system.particles[i].diameter = 0.3
+
+        ## Interbody bonds
         for conn in global_connections_pairs:
-            nucl0 = getNucleotide(conn[0])
-            nucl1 = getNucleotide(conn[1])
-            if [nucl1.body, nucl0.body] and [nucl0.body, nucl1.body] not in connections:
-                connections.append([nucl0.body, nucl1.body])
-        return(connections)
+            nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
+            nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
+            delta = num_rigid_bodies
 
-    #create very weak bonds between com that are connected
-    bonds = bodyConnections()
-    snapshot.bonds.resize(len(bonds))
-    snapshot.bonds.group[:] = bonds
+            system.bonds.add('interbody', delta + nucl_0_body_location, delta + nucl_1_body_location)
 
-    # Read the snapshot and create neighbor list
-    system = init.read_snapshot(snapshot);
-    nl = md.nlist.stencil();
+        ########## INTERACTIONS ############
+        # LJ interactions
+        wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
+        wca.set_params(mode='shift')
+        wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
 
-    # Create rigid particles
-    rigid = md.constrain.rigid();
-    for b, body in enumerate(bodies):
-        body_type = body_types[b]
-        nucl_positions = [nucl.position[1] for nucl in body.nucleotides]
-        # move particles to body reference frame
-        nucl_positions -= body.com_position
-        rigid.set_param(body_type, \
-                    types=['nucleotides']*len(nucl_positions), \
-                    positions = nucl_positions); #magic numbers. Check !!!
+        ########## INTEGRATION ############
+        md.integrate.mode_standard(dt=0.005, aniso=True);
+        rigid = group.rigid_center();
+        md.integrate.langevin(group=rigid, kT=0.5, seed=42);
 
-    rigid.create_bodies()
+        ########## DUMP & RUN ############
+        dump.gsd("output/tripod_relax.gsd",
+                       period=1e5,
+                       group=group.all(),
+                       static=[],
+                       overwrite=True);
 
-    harmonic = md.bond.harmonic()
-    harmonic.bond_coeff.set('body', k=0.001, r0=10);
-    harmonic.bond_coeff.set('interbody', k=0.1, r0=1.0)
+        run(2e5)
 
-    # fix diameters for vizualization
-    for i in range(0, num_rigid_bodies):
-        system.particles[i].diameter = 4.0
-    for i in range(num_rigid_bodies, len(system.particles)):
-        system.particles[i].diameter = 0.3
+        #update global particle positions and quaternions
+        i = num_rigid_bodies
+        for b, body in enumerate(bodies):
+            for nucl in body.nucleotides:
+                vh = nucl.vh
+                index = nucl.index
+                is_fwd = int((nucl.direction + 1)/2)
+                nucl_position = system.particles[i].position
 
-    ## Interbody bonds
-    for conn in global_connections_pairs:
-        nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
-        nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
-        delta = num_rigid_bodies
-
-        system.bonds.add('interbody', delta + nucl_0_body_location, delta + nucl_1_body_location)
-
-    ########## INTERACTIONS ############
-    # LJ interactions
-    wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
-    wca.set_params(mode='shift')
-    wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
-
-    ########## INTEGRATION ############
-    md.integrate.mode_standard(dt=0.005, aniso=True);
-    rigid = group.rigid_center();
-    md.integrate.langevin(group=rigid, kT=0.5, seed=42);
-
-    ########## DUMP & RUN ############
-    dump.gsd("output/tripod_relax.gsd",
-                   period=1e5,
-                   group=group.all(),
-                   static=[],
-                   overwrite=True);
-
-    run(3e5)
-
-    #update global particle positions and quaternions
-    i = num_rigid_bodies
-    for b, body in enumerate(bodies):
-        for nucl in body.nucleotides:
-            vh = nucl.vh
-            index = nucl.index
-            is_fwd = int((nucl.direction + 1)/2)
-            nucl_position = system.particles[i].position
-
-            nucl_quaternion_new = system.particles[i].orientation
-            nucl_quaternion_new = vTools.quat2Quat(nucl_quaternion_new)
-            nucl_quaternion_old = nucl.quaternion
-            nucl_quaternion_old = vTools.quat2Quat(nucl_quaternion_old)
-            quat = nucl_quaternion_new * nucl_quaternion_old
-            quat = [quat.w, quat.x, quat.y, quat.z]
-            global_nucl_matrix[vh][index][is_fwd].position[1] = nucl_position
-            global_nucl_matrix[vh][index][is_fwd].quaternion = quat
-            i += 1
+                nucl_quaternion_new = system.particles[i].orientation
+                nucl_quaternion_new = vTools.quat2Quat(nucl_quaternion_new)
+                nucl_quaternion_old = nucl.quaternion
+                nucl_quaternion_old = vTools.quat2Quat(nucl_quaternion_old)
+                quat = nucl_quaternion_new * nucl_quaternion_old
+                quat = [quat.w, quat.x, quat.y, quat.z]
+                global_nucl_matrix[vh][index][is_fwd].position[1] = nucl_position
+                global_nucl_matrix[vh][index][is_fwd].quaternion = quat
+                i += 1
 
 
-    import pickle
-    with open('global.pckl', 'wb') as f:
-        pickle.dump(global_nucl_matrix, f)
+        import pickle
+        with open('global.pckl', 'wb') as f:
+            pickle.dump(global_nucl_matrix, f)
 
-with MD_sim:
-    #read global_nucl_matrix from pickle file
-    import pickle
-    f = open('global.pckl', 'rb')
-    global_nucl_matrix = pickle.load(f)
-    f.close()
+if RELAX == False:
+    with MD_sim:
+        #read global_nucl_matrix from pickle file
+        import pickle
+        f = open('global.pckl', 'rb')
+        global_nucl_matrix = pickle.load(f)
+        f.close()
 
-    num_oligos = len(oligos_list)
-    nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
-                        for strand in chain for pointer in strand]
-    total_num_nucl = len(nucl_positions)
+        num_oligos = len(oligos_list)
+        nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
+                            for strand in chain for pointer in strand]
+        total_num_nucl = len(nucl_positions)
 
-    snapshot = data.make_snapshot(N = total_num_nucl,
-                                  box = data.boxdim(Lx=180, Ly=180, Lz=300),
-                                  particle_types=['backbone','sidechain','aux'],
-                                  bond_types = ['backbone','aux_sidechain'],
-                                  dihedral_types = ['dihedral1', \
-                                                    'dihedral21',\
-                                                    'dihedral22',\
-                                                    'dihedral31',\
-                                                    'dihedral32']);
+        snapshot = data.make_snapshot(N = total_num_nucl,
+                                      box = data.boxdim(Lx=120, Ly=120, Lz=120),
+                                      particle_types=['backbone','sidechain','aux'],
+                                      bond_types = ['backbone','aux_sidechain'],
+                                      dihedral_types = ['dihedral1', \
+                                                        'dihedral21',\
+                                                        'dihedral22',\
+                                                        'dihedral31',\
+                                                        'dihedral32']);
 
-    # particle positions, types and moments of inertia
-    nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
-                        for strand in chain for pointer in strand]
-    nucl_quaternions = [getNucleotide(pointer).quaternion for chain in oligos_list \
-                        for strand in chain for pointer in strand]
+        # particle positions, types and moments of inertia
+        nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
+                            for strand in chain for pointer in strand]
+        nucl_quaternions = [getNucleotide(pointer).quaternion for chain in oligos_list \
+                            for strand in chain for pointer in strand]
 
-    snapshot.particles.position[:] = nucl_positions
-    snapshot.particles.orientation[:] = nucl_quaternions
-    snapshot.particles.moment_inertia[:] = [[1.,1.,1.]] #not correct. fix it
-    snapshot.particles.typeid[:] = [0];
+        snapshot.particles.position[:] = nucl_positions
+        snapshot.particles.orientation[:] = nucl_quaternions
+        snapshot.particles.moment_inertia[:] = [[1.,1.,1.]] #not correct. fix it
+        snapshot.particles.typeid[:] = [0];
 
-    # Backbone bonds
-    bonds = []
-    i = 0
-    for chain in oligos_list:
-        flat_chain = np.concatenate(chain)
-        for n in range(i, i + len(flat_chain) - 1):
-            bonds.append([n, n+1])
-        i += len(flat_chain)
+        # Backbone bonds
+        bonds = []
+        i = 0
+        for chain in oligos_list:
+            flat_chain = np.concatenate(chain)
+            for n in range(i, i + len(flat_chain) - 1):
+                bonds.append([n, n+1])
+            i += len(flat_chain)
 
-    #fix: add extra bond for circular staples / scaffold
-    snapshot.bonds.resize(len(bonds))
-    snapshot.bonds.group[:] = bonds
+        #fix: add extra bond for circular staples / scaffold
+        snapshot.bonds.resize(len(bonds))
+        snapshot.bonds.group[:] = bonds
 
-    # Read the snapshot and create neighbor list
-    system = init.read_snapshot(snapshot);
-    nl = md.nlist.cell();
+        # Read the snapshot and create neighbor list
+        system = init.read_snapshot(snapshot);
+        nl = md.nlist.cell();
 
-    ############ BONDS ############
-    #rigid
-    nucl0 = getNucleotide(oligos_list[0][0][0])
-    rigid = md.constrain.rigid();
-    rigid.set_param('backbone', \
-                    types=['sidechain','aux'], \
-                    positions = [0.9*nucl0.vectors[0], 0.4*nucl0.vectors[1]]); #magic numbers. Check !!!
-    rigid.create_bodies()
+        ############ BONDS ############
+        #rigid
+        nucl0 = getNucleotide(oligos_list[0][0][0])
+        rigid = md.constrain.rigid();
+        rigid.set_param('backbone', \
+                        types=['sidechain','aux'], \
+                        positions = [0.9*nucl0.vectors[0], 0.4*nucl0.vectors[1]]); #magic numbers. Check !!!
+        rigid.create_bodies()
 
-    #harmonic
-    harmonic1 = md.bond.harmonic()
-    harmonic1.bond_coeff.set('backbone', k=10.0, r0=0.75)
-    harmonic1.bond_coeff.set('aux_sidechain', k=00.0, r0=0.1) #needed so sidechains in a chain dont interact
+        #harmonic
+        harmonic1 = md.bond.harmonic()
+        harmonic1.bond_coeff.set('backbone', k=5.0, r0=0.75)
+        harmonic1.bond_coeff.set('aux_sidechain', k=00.0, r0=0.1) #needed so sidechains in a chain dont interact
 
-    #dihedrals
-    def harmonicAngle(theta, kappa, theta0):
-       V = 0.5 * kappa * (theta-theta0)**2;
-       F = -kappa*(theta-theta0);
-       return (V, F)
+        #dihedrals
+        def harmonicAngle(theta, kappa, theta0):
+           V = 0.5 * kappa * (theta-theta0)**2;
+           F = -kappa*(theta-theta0);
+           return (V, F)
 
-    index_1st_nucl_in_strand = 0
-    for chain in range(len(oligos_list)):
-        for strand in range(len(oligos_list[chain])):
-            for nucl in range(len(oligos_list[chain][strand]) - 2):
+        index_1st_nucl_in_strand = 0
+        for chain in range(len(oligos_list)):
+            for strand in range(len(oligos_list[chain])):
+                for nucl in range(len(oligos_list[chain][strand]) - 2):
 
-                bckbone_1 = index_1st_nucl_in_strand + nucl
-                sidechain_1 = total_num_nucl + 2*index_1st_nucl_in_strand + 2*nucl
-                aux_1 = sidechain_1 + 1
+                    bckbone_1 = index_1st_nucl_in_strand + nucl
+                    sidechain_1 = total_num_nucl + 2*index_1st_nucl_in_strand + 2*nucl
+                    aux_1 = sidechain_1 + 1
 
-                bckbone_2 = bckbone_1 + 1
-                sidechain_2 = sidechain_1 + 2
-                aux_2 = aux_1 + 2
+                    bckbone_2 = bckbone_1 + 1
+                    sidechain_2 = sidechain_1 + 2
+                    aux_2 = aux_1 + 2
 
-                system.dihedrals.add('dihedral1',  sidechain_1, bckbone_1, bckbone_2, sidechain_2)
-                system.dihedrals.add('dihedral21', sidechain_1, bckbone_1, aux_1, bckbone_2)
-                system.dihedrals.add('dihedral22', sidechain_2, bckbone_2, aux_2, bckbone_1)
-                system.dihedrals.add('dihedral31', aux_1, bckbone_1, sidechain_1, bckbone_2)
-                system.dihedrals.add('dihedral32', aux_2, bckbone_2, sidechain_2, bckbone_1)
+                    system.dihedrals.add('dihedral1',  sidechain_1, bckbone_1, bckbone_2, sidechain_2)
+                    system.dihedrals.add('dihedral21', sidechain_1, bckbone_1, aux_1, bckbone_2)
+                    system.dihedrals.add('dihedral22', sidechain_2, bckbone_2, aux_2, bckbone_1)
+                    system.dihedrals.add('dihedral31', aux_1, bckbone_1, sidechain_1, bckbone_2)
+                    system.dihedrals.add('dihedral32', aux_2, bckbone_2, sidechain_2, bckbone_1)
 
-                system.bonds.add('aux_sidechain', sidechain_1, sidechain_2)
+                    system.bonds.add('aux_sidechain', sidechain_1, sidechain_2)
 
-            index_1st_nucl_in_strand += len(oligos_list[chain][strand])
+                index_1st_nucl_in_strand += len(oligos_list[chain][strand])
 
-    dtable = md.dihedral.table(width=1000)
-    dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=50, theta0=-0.28))
-    dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.30))
-    dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.30))
-    dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.57))
-    dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.57))
+        dtable = md.dihedral.table(width=1000)
+        dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=50, theta0=-0.28))
+        dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.30))
+        dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.30))
+        dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.57))
+        dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.57))
 
-    # fix diameters for vizualization
-    for i in range(0, total_num_nucl):
-        system.particles[i].diameter = 0.8
-    for i in range(total_num_nucl, len(system.particles), 2):
-        system.particles[i].diameter = 0.3
-        system.particles[i + 1].diameter = 0.1
+        # fix diameters for vizualization
+        for i in range(0, total_num_nucl):
+            system.particles[i].diameter = 0.8
+        for i in range(total_num_nucl, len(system.particles), 2):
+            system.particles[i].diameter = 0.3
+            system.particles[i + 1].diameter = 0.1
 
-    ######### INTERACTIONS ############
-    # LJ interactions
-    wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
-    wca.set_params(mode='shift')
-    wca.pair_coeff.set('backbone', 'backbone',   epsilon=1.0, sigma=0.750, r_cut=0.750*2**(1/6))
-    wca.pair_coeff.set('backbone', 'sidechain',  epsilon=1.0, sigma=0.375, r_cut=0.375*2**(1/6))
-    wca.pair_coeff.set('sidechain', 'sidechain', epsilon=1.0, sigma=0.100, r_cut=0.4)
-    wca.pair_coeff.set('backbone', 'aux',        epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-    wca.pair_coeff.set('aux', 'sidechain',       epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-    wca.pair_coeff.set('aux', 'aux',             epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
+        ######### INTERACTIONS ############
+        # LJ interactions
+        wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
+        wca.set_params(mode='shift')
+        wca.pair_coeff.set('backbone', 'backbone',   epsilon=1.0, sigma=0.750, r_cut=0.750*2**(1/6))
+        wca.pair_coeff.set('backbone', 'sidechain',  epsilon=1.0, sigma=0.375, r_cut=0.375*2**(1/6))
+        wca.pair_coeff.set('sidechain', 'sidechain', epsilon=1.0, sigma=0.100, r_cut=0.4)
+        wca.pair_coeff.set('backbone', 'aux',        epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
+        wca.pair_coeff.set('aux', 'sidechain',       epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
+        wca.pair_coeff.set('aux', 'aux',             epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
 
-    ########## INTEGRATION ############
-    # md.integrate.mode_standard(dt=0.003, aniso=True);
-    rigid = group.rigid_center();
-    # md.integrate.langevin(group=rigid, kT=0.2, seed=42);
-    ########## DUMP & RUN ############
-    dump.gsd("output/tripod_MD.gsd",
-                   period=1,
-                   group=group.all(),
-                   static=[],
-                   overwrite=True);
-    run(10);
+        ########## INTEGRATION ############
+        md.integrate.mode_standard(dt=0.003, aniso=True);
+        rigid = group.rigid_center();
+        md.integrate.langevin(group=rigid, kT=0.1, seed=42);
+        ########## DUMP & RUN ############
+        dump.gsd("output/tripod_MD.gsd",
+                       period=1000,
+                       group=group.all(),
+                       static=[],
+                       overwrite=True);
+        run(1e6);
 
 
 
