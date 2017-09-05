@@ -1,19 +1,605 @@
-from os import path
 import numpy as np
 import cadnano
+import vectortools
+import functools
+
 from cadnano.document import Document
-import vector_tools as vTools #needed for vector / quaternion calculations
+from hoomd import *
+from hoomd import md
 
-####### USER DEFINED AND GLOBAL VARIABLES ######
-INPUT_FILENAME = 'input/tripod.json'
-RELAX = False
+class Origami:
+    '''
+    Parent DNA origami model class
+    '''
 
-global_nucl_matrix = []
-global_connections_pairs = []
+    def __init__(self):
+        #Body variables
+        self.rigid_bodies                  = []
+        self.soft_bodies                   = []
+        
+        
+        self.rigid_body_nucleotide_types   = []
+        self.rigid_body_nucleotides        = []
 
-########### helper #############
-# Helper functions for cadnano #
-################################
+        self.soft_body_nucleotide_types    = []
+        self.soft_body_nucleotides         = []
+        
+        self.num_rigid_bodies              = 0
+        self.num_soft_bodies               = 0
+        
+        #Soft connections
+        self.inter_rigid_body_connections  = []
+        self.inter_nucleotide__connections = []
+
+        #Cadnano parameters
+        self.part                   = None
+        self.oligos                 = None
+        self.strands                = None
+        self.num_vhs                = None
+        self.nucleotide_list        = None
+        self.nucleotide_matrix      = None
+        
+        self.nucleotide_type_list   = None
+        self.nucleotide_type_matrix = None
+        
+        self.crossovers             = None
+        self.vh_vh_crossovers       = None
+        self.long_range_connections = {}
+        self.short_range_connections= {}
+        self.soft_connections       = {}
+
+        #Distance constraints
+        self.crossover_distance      = 2.0   #Distance in Angstrom 
+
+    def parse_soft_connections(self):
+        self.inter_rigid_body_connections = set()
+        self.inter_nucleotide_connections = set()
+        
+        for pointer_1, pointer_2 in self.soft_connections.items():
+            vh_1,index_1,is_fwd_1 = pointer_1
+            vh_2,index_2,is_fwd_2 = pointer_2
+
+            nucleotide_1 = self.nucleotide_matrix[vh_1][index_1][is_fwd_1]
+            nucleotide_2 = self.nucleotide_matrix[vh_2][index_2][is_fwd_2]
+
+            #Get body numbers
+            body_num_1   = nucleotide_1.body_num
+            body_num_2   = nucleotide_2.body_num
+
+            #If both nucleotides are part of the rigid bodies, add the connection to rigid body connections
+            if nucleotide_1.body.type and nucleotide_2.body.type and body_num_1 != body_num_2 and not (body_num_2,body_num_1) in self.inter_rigid_body_connections:
+                self.inter_rigid_body_connections.add((body_num_1,body_num_2))
+
+
+            #Add nucleotide-nucleotide connections to list
+            nucleotide_sim_num_1 = nucleotide_1.simulation_nucleotide_num
+            nucleotide_sim_num_2 = nucleotide_2.simulation_nucleotide_num
+
+            if not (nucleotide_sim_num_2,nucleotide_sim_num_1) in self.inter_nucleotide_connections:
+                self.inter_nucleotide_connections.add((nucleotide_sim_num_1,nucleotide_sim_num_2))
+
+
+    def assign_nucleotide_types(self):
+        '''
+        Build the nucleotide network for an origami design
+        '''
+        self.nucleotide_type_list = []
+        for vh in range(len(self.nucleotide_matrix)):
+            for idx in range(len(self.nucleotide_matrix[vh])):
+                
+                #Determine the nucleotide type ssNucleotide vs dsNucletide and nucleotide connections
+                current_nucleotide_rev = self.nucleotide_matrix[vh][idx][0]
+                current_nucleotide_fwd = self.nucleotide_matrix[vh][idx][1]
+
+                if not current_nucleotide_fwd == None and not current_nucleotide_rev == None:
+                    ds_nucleotide = DSNucleotide()
+                    ds_nucleotide.fwd_nucleotide   = current_nucleotide_fwd
+                    ds_nucleotide.rev_nucleotide   = current_nucleotide_rev
+                    ds_nucleotide.type             = 1
+                    self.nucleotide_type_matrix[vh][idx] = ds_nucleotide
+                    self.nucleotide_type_list.append(ds_nucleotide)
+
+                elif not current_nucleotide_fwd == None:
+                    ss_nucleotide                  = SSNucleotide()
+                    ss_nucleotide.nucleotide       = current_nucleotide_fwd
+                    ss_nucleotide.type             = 0
+                    
+                    self.nucleotide_type_matrix[vh][idx] = ss_nucleotide
+                    self.nucleotide_type_list.append(ss_nucleotide)
+
+                elif not current_nucleotide_rev == None:
+
+                    ss_nucleotide                  = SSNucleotide()
+                    ss_nucleotide.nucleotide       = current_nucleotide_rev
+                    ss_nucleotide.type             = 0
+
+                    self.nucleotide_type_matrix[vh][idx] = ss_nucleotide
+                    self.nucleotide_type_list.append(ss_nucleotide)
+
+    def assign_nucleotide_connections(self):
+        '''
+        Assign nucleotide connections
+        '''
+        #1. Add the base-stacking interactions
+        for vh in range(len(self.nucleotide_type_matrix)):
+            for idx in range(len(self.nucleotide_type_matrix[vh])):
+
+                if self.nucleotide_type_matrix[vh][idx] == None:
+                    continue
+
+                self.nucleotide_type_matrix[vh][idx].rigid_connections = []
+                self.nucleotide_type_matrix[vh][idx].soft_connections  = []
+
+                #Get the type for nucleotide
+                type_1 = self.nucleotide_type_matrix[vh][idx].type
+
+                #Pointer 1
+                pointer1_fwd = (vh,idx,1)
+                pointer1_rev = (vh,idx,0)
+
+                if idx+1 < len(self.nucleotide_type_matrix[vh]) and not self.nucleotide_type_matrix[vh][idx+1] == None:
+                    type_2 = self.nucleotide_type_matrix[vh][idx+1].type
+                    
+                    #If both types are dsNucleotide make the connection rigid
+                    if type_1*type_2:
+                        self.nucleotide_type_matrix[vh][idx].rigid_connections.append(self.nucleotide_type_matrix[vh][idx+1])
+                    else:
+                        self.nucleotide_type_matrix[vh][idx].soft_connections.append(self.nucleotide_type_matrix[vh][idx+1])
+
+                        pointer2_fwd = (vh,idx+1,1)
+                        pointer2_rev = (vh,idx+1,0)
+
+                        if  pointer1_fwd in  self.short_range_connections.keys() and self.short_range_connections[pointer1_fwd] == pointer2_fwd:
+                            self.soft_connections[pointer1_fwd] = pointer2_fwd
+                        elif self.short_range_connections[pointer2_rev] == pointer1_rev:
+                            self.soft_connections[pointer2_rev] = pointer1_rev
+
+                if idx-1 >= 0 and not self.nucleotide_type_matrix[vh][idx-1] == None:
+                    type_2 = self.nucleotide_type_matrix[vh][idx-1].type
+                    if type_1*type_2:
+                        self.nucleotide_type_matrix[vh][idx].rigid_connections.append(self.nucleotide_type_matrix[vh][idx-1])
+                    else:
+                        self.nucleotide_type_matrix[vh][idx].soft_connections.append(self.nucleotide_type_matrix[vh][idx-1])
+
+                        pointer2_fwd = (vh,idx-1,1)
+                        pointer2_rev = (vh,idx-1,0)
+
+                        if pointer2_fwd in  self.short_range_connections.keys() and self.short_range_connections[pointer2_fwd] == pointer1_fwd:
+                            self.soft_connections[pointer2_fwd] = pointer1_fwd
+                        elif self.short_range_connections[pointer1_rev] == pointer2_rev:
+                            self.soft_connections[pointer1_rev] = pointer2_rev
+
+
+
+        #2. Add the crossover connections
+        for pointer_1, pointer_2 in self.crossovers.items():
+            (vh_1, index_1, is_fwd_1) = pointer_1
+            (vh_2, index_2, is_fwd_2) = pointer_2
+
+            type_1 = self.nucleotide_type_matrix[vh_1][index_1].type
+            type_2 = self.nucleotide_type_matrix[vh_2][index_2].type
+
+            if self.vh_vh_crossovers[vh_1][vh_2] > 1 and type_1*type_2:
+                self.nucleotide_type_matrix[vh_1][index_1].rigid_connections.append(self.nucleotide_type_matrix[vh_2][index_2])
+                self.nucleotide_type_matrix[vh_2][index_2].rigid_connections.append(self.nucleotide_type_matrix[vh_1][index_1])
+            else:
+                self.nucleotide_type_matrix[vh_1][index_1].soft_connections.append(self.nucleotide_type_matrix[vh_2][index_2])
+                self.nucleotide_type_matrix[vh_2][index_2].soft_connections.append(self.nucleotide_type_matrix[vh_1][index_1])
+                
+                #Add the connection to soft connection list
+                self.soft_connections[pointer_1] = pointer_2 
+
+        #3. Add long range connections
+        for pointer_1, pointer_2 in self.long_range_connections.items():
+            (vh_1, index_1, is_fwd_1) = pointer_1
+            (vh_2, index_2, is_fwd_2) = pointer_2
+
+            self.nucleotide_type_matrix[vh_1][index_1].soft_connections.append(self.nucleotide_type_matrix[vh_2][index_2])
+            self.nucleotide_type_matrix[vh_2][index_2].soft_connections.append(self.nucleotide_type_matrix[vh_1][index_1])
+            
+            #Add the connection to soft connection list
+            self.soft_connections[pointer_1] = pointer_2 
+
+    def get_connections(self):
+        '''
+        Given a vh number, returns the set of neighboring vhs,
+        where a neighbor has a *staple* connection with vh
+        that is closer than dist = 10.0
+        '''
+        self.crossovers             = {}
+        self.long_range_connections = {}
+        for vh in range(self.num_vhs):
+            staple_strandSet   = self.part.getStrandSets(vh)[not(vh % 2)] #staple strands only
+            scaffold_strandSet = self.part.getStrandSets(vh)[(vh % 2)]
+            
+            for strand in staple_strandSet:
+                self.connection3p(strand) 
+                self.connection5p(strand)
+            for strand in scaffold_strandSet:
+                self.connection3p(strand)
+                self.connection5p(strand)
+
+    def dfs(self, start_nucleotide_type):
+        '''
+        Depth-first-search graph traverse algorithm to find connected components
+        '''
+        visited, stack = set(), [start_nucleotide_type]
+        while stack:
+            new_nucleotide_type = stack.pop()
+            if new_nucleotide_type not in visited:
+                visited.add(new_nucleotide_type)
+                new_nucleotide_type.visited = True
+                stack.extend(set(new_nucleotide_type.rigid_connections) - visited)
+        return visited
+
+    def cluster_into_bodies(self):
+        '''
+        Cluster the DNA origami structure into body clusters
+        '''
+
+        self.num_bodies            = 0
+        self.body_nucleotide_types = []
+        self.body_nucleotides      = []
+        self.rigid_bodies          = []
+        self.soft_bodies           = []
+
+        #1. Identify the clusters using dfs
+        for nucleotide_type in self.nucleotide_type_list:
+            
+            if nucleotide_type.visited:
+                continue
+            
+            #Get the nucleotide types for each cluster
+            self.body_nucleotide_types.append([])
+            self.body_nucleotide_types[self.num_bodies] = list(self.dfs(nucleotide_type))
+            
+            #Check if the cluster is a rigid body
+            rigid_body = functools.reduce(lambda x,y:x*y,[nucleotide_type.type for nucleotide_type in self.body_nucleotide_types[self.num_bodies]])
+            
+            #Create a new Body object
+            new_body = Body()
+            new_body.nucleotide_types = self.body_nucleotide_types[self.num_bodies]
+            new_body.type             = rigid_body
+
+            #If the body is rigid add to rigid body collection
+            if rigid_body:
+                self.rigid_bodies.append(new_body)
+            else:
+                self.soft_bodies.append(new_body)
+
+            self.num_bodies += 1
+
+        #2. Update soft body nucleotide body position numbers and body numbers
+        nucleotide_number = 0
+        for i in range(len(self.soft_bodies)):
+            soft_body               = self.soft_bodies[i]
+            soft_body.nucleotides   = []    
+            nucleotide_type         = soft_body.nucleotide_types[0]
+            
+            #Update the nucleotide number
+            nucleotide_type.nucleotide.simulation_nucleotide_num = nucleotide_number
+
+            #Assign soft body to nucleotide
+            nucleotide_type.nucleotide.body = soft_body
+
+            soft_body.nucleotides  += [nucleotide_type.nucleotide]
+            self.body_nucleotides  += [nucleotide_type.nucleotide]
+
+            nucleotide_number      += 1
+
+            #Initialize soft bodies
+            soft_body.initialize()
+
+        #3. Update rigid body nucleotide body position numbers and body numbers
+        for i in range(len(self.rigid_bodies)):
+            rigid_body             = self.rigid_bodies[i]
+            rigid_body.nucleotides = []
+            for nucleotide_type in rigid_body.nucleotide_types:
+                fwd_nucleotide = nucleotide_type.fwd_nucleotide
+                rev_nucleotide = nucleotide_type.rev_nucleotide
+
+                fwd_nucleotide.simulation_nucleotide_num = nucleotide_number
+                rev_nucleotide.simulation_nucleotide_num = nucleotide_number+1
+
+                #Assign the rigid bodies to nucleotides
+                fwd_nucleotide.body = rigid_body
+                rev_nucleotide.body = rigid_body
+
+                nucleotide_number    += 2
+                
+                rigid_body.nucleotides+= [fwd_nucleotide,rev_nucleotide]
+                self.body_nucleotides += [fwd_nucleotide,rev_nucleotide]
+
+            #Initialize rigid bodies
+            rigid_body.initialize()
+
+    def parse_oligo(self, oligo):
+        '''
+        Given an oligo, returns the following list of useful properties
+        (strand, strand direction, virtual_helix_id, index)
+        for each nucleotide. List is oriented 5' to 3'
+        '''
+
+        generator         = oligo.strand5p().generator3pStrand()
+        oligo_helper_list = []
+        for strand in generator:
+            strand_helper_list = []
+            vh        = strand.idNum()
+            index_5p  = strand.idx5Prime()
+            index_3p  = strand.idx3Prime()
+            direction = (-1 + 2*strand.isForward()) #-1 if backwards, 1 if fwd
+            for i in range(index_5p, index_3p + direction, direction):
+                strand_helper_list.append([strand, direction, vh, i])
+            oligo_helper_list.append(strand_helper_list)
+        return oligo_helper_list
+
+    def list_oligos(self):
+        '''
+        Given a origami part
+        Return an array with all oligos in part sorted by length
+        '''
+        self.oligos = self.part.oligos()
+        self.oligos = sorted(self.oligos, key=lambda x: x.length(), reverse=True)
+        
+        return self.oligos
+
+    def get_coordinates(self, vh, index):
+        '''
+        Given a vh and a index, returns (x,y,z)
+        for the sidechain pts and backbones fwd and rev
+        '''
+        axis_pts = self.part.getCoordinates(vh)[0][index]
+        fwd_pts  = self.part.getCoordinates(vh)[1][index]
+        rev_pts  = self.part.getCoordinates(vh)[2][index]
+        
+        return [rev_pts, fwd_pts, axis_pts]
+
+    def initialize_nucleotide_matrix(self):
+        '''
+        Creates an empty matrix of len = vh_length x index_length
+        to be populated with all nucleotides in part
+        This will be the global reference to any nucleotide
+        via global_nucl_matrix[vh][index][rev or fwd]
+        '''
+        self.num_vhs = len(list(self.part.getIdNums()))
+        num_bases    = self.part.getVirtualHelix(0).getSize()
+
+        self.nucleotide_matrix       = [[[None,None]  for idx in range(num_bases)] for vh in range(self.num_vhs)]
+        self.nucleotide_type_matrix  = [[ None  for idx in range(num_bases)] for vh in range(self.num_vhs)]
+        self.vh_vh_crossovers        = [[0  for vh in range(self.num_vhs)] for vh in range(self.num_vhs)]
+
+
+    def connection5p(self,strand):
+        '''
+        Given a strand, returns the vhelix to which the 5p end
+        connects to, if the distance is not too far
+        '''
+        if strand.connection5p() != None:
+            vh_1     = strand.idNum()
+            index_1  = strand.idx5Prime()
+            is_fwd_1 = int(strand.isForward())
+            
+            vh_2     = strand.connection5p().idNum()
+            index_2  = strand.connection5p().idx3Prime()
+            is_fwd_2 = int(strand.connection5p().isForward())
+
+            conn_pointer_1 = (vh_1, index_1, is_fwd_1)
+            conn_pointer_2 = (vh_2, index_2, is_fwd_2)
+            
+            distance = self.distance_between_vhs(vh_1, index_1, is_fwd_1, vh_2, index_2, is_fwd_2)
+
+            if distance < self.crossover_distance:
+                self.crossovers[conn_pointer_1]    =  conn_pointer_2
+                self.vh_vh_crossovers[vh_1][vh_2] += 1
+            else:
+                self.long_range_connections[conn_pointer_1] = conn_pointer_2
+        
+
+    def connection3p(self,strand):
+        '''
+        Given a strand, returns the vhelix to which the 3p end
+        connects to, if the distance is not too far
+        '''
+        if strand.connection3p() != None:
+            vh_1 = strand.idNum()
+            index_1 = strand.idx3Prime()
+            is_fwd_1 = int(strand.isForward())
+            
+            vh_2 = strand.connection3p().idNum()
+            index_2 = strand.connection3p().idx5Prime()
+            is_fwd_2 = int(strand.connection3p().isForward())
+            
+            conn_pointer_1 = (vh_1, index_1, is_fwd_1)
+            conn_pointer_2 = (vh_2, index_2, is_fwd_2)
+
+            distance = self.distance_between_vhs(vh_1, index_1, is_fwd_1, vh_2, index_2, is_fwd_2)
+            
+            if distance <self.crossover_distance:
+                self.crossovers[conn_pointer_1]    =  conn_pointer_2
+                self.vh_vh_crossovers[vh_1][vh_2] += 1
+            else:
+                self.long_range_connections[conn_pointer_1] = conn_pointer_2
+
+    def get_nucleotide(self,pointers):
+        '''
+        Given a tuple of pointers in the form [vh, index, is_fwd],
+        Returns the global nucleotide referent to the pointers
+        '''
+        [vh, index, is_fwd] = pointers
+        return self.nucleotide_matrix[vh][index][is_fwd]
+
+    def oligo_to_strands_nucleotides(self, oligo):
+        '''
+        Given an oligo, returns a list of strands,
+        each containing the pointers ([vh][index][is_fwd]) to the
+        nucleotides making up such strand and populate nucleotides matrix
+        with basic attributes (direction, index, position, strand, vh)
+        '''
+        if self.nucleotide_matrix == None:
+            self.initialize_nucleotide_matrix()                             #start pre-populating global var
+
+        strand_list = []
+        for helper_strands in self.parse_oligo(oligo):
+            nucleotides_list = []
+            for i in range(len(helper_strands)):
+                #Current nucleotide
+                strand, direction, vh, index = helper_strands[i]
+
+                if i+1 < len(helper_strands):
+                    strand_next, direction_next,vh_next,index_next = helper_strands[i+1]
+                    conn_pointer_1 = (vh     ,index     , int(direction > 0     ))
+                    conn_pointer_2 = (vh_next,index_next, int(direction_next > 0))
+                    
+                    #Assign short range connection
+                    self.short_range_connections[conn_pointer_1] = conn_pointer_2
+                
+                #Get the coordinates
+                coordinates = self.get_coordinates(vh, index)
+                
+                #Get direction
+                is_fwd = int(direction > 0)
+
+                new_nucleotide = Nucleotide()
+                new_nucleotide.direction         = direction
+                new_nucleotide.index             = index
+                new_nucleotide.position          = [coordinates[2], coordinates[is_fwd]] #Sidechain(axis) and backbone coordinates 
+                new_nucleotide.strand            = strand
+                new_nucleotide.vh                = vh
+                new_nucleotide.is_fwd            = is_fwd
+                
+                #Assign the nucleotide 
+                self.nucleotide_matrix[vh][index][is_fwd] = new_nucleotide
+
+                #Add nucleotide to list
+                self.nucleotide_list.append(new_nucleotide)
+
+                nucleotides_list.append([vh, index, is_fwd])
+            strand_list.append(nucleotides_list)
+        return strand_list
+
+    def oligos_list_to_nucleotide_info(self, i, j, k):
+        '''
+        Oligos helper list gives a tuple list of pointers
+        of the type [vh, index, is_fwd] which are needed to
+        reference nucleotides in global_nucl_matrix
+        this function translates oligo_helper_list into
+        indices to be used by global_nucl_matrix
+        '''
+
+        [vh, index, is_fwd] = self.oligos_list[i][j][k]
+        return [vh, index, is_fwd]
+
+    def create_oligos_list(self):
+        '''
+        Given an array of oligos in part, returns a list of *oligos*,
+        each containing a list of *strands(), each containing a
+        list of *nucleotides() making up the part.
+        '''
+        self.oligos_list     = []
+        self.nucleotide_list = []
+        for oligo in self.oligos:
+            strand_list = self.oligo_to_strands_nucleotides(oligo)
+            self.oligos_list.append(strand_list)
+        return self.oligos_list
+
+    def distance_between_vhs(self, vh1, index1, is_fwd1, vh2, index2, is_fwd2):
+        '''
+        Given 2 points(vh, index), calculates the
+        Euclian distance between them
+        '''
+        pos1 = self.get_coordinates(vh1, index1)[is_fwd1]
+        pos2 = self.get_coordinates(vh2, index2)[is_fwd2]
+        distance = np.linalg.norm(pos1 - pos2)
+        return distance
+
+    def populate_nucleotide_geometries(self):
+        '''
+        Given an array of oligos, fills the remaining nucleotide attributes:
+        vectors, quaternion, global_pts
+        '''
+
+        for o, oligo in enumerate(self.oligos_list):
+            for s, strand in enumerate(oligo):
+
+                [vh_0, index_0, is_fwd_0] = self.oligos_list_to_nucleotide_info( 0, 0, 0)
+                [vh_1, index_1, is_fwd_1] = self.oligos_list_to_nucleotide_info( 0, 0, 1)
+
+                [axis_0, backbone_0] = self.nucleotide_matrix[vh_0][index_0][is_fwd_0].position
+                [axis_1, backbone_1] = self.nucleotide_matrix[vh_1][index_1][is_fwd_1].position
+
+                #Calculate the vectors
+                base_vector_0     = axis_0     - backbone_0
+                backbone_vector_0 = backbone_1 - backbone_0
+
+                aux_vector_a_0 = np.cross(base_vector_0, backbone_vector_0)
+                aux_vector_b_0 = np.cross(aux_vector_a_0, base_vector_0)
+               
+                # return 3 orthogonal vectors in nucleotide, for quaternion
+                vect_list_0 = (base_vector_0/np.linalg.norm(base_vector_0), \
+                             aux_vector_a_0/np.linalg.norm(aux_vector_a_0), \
+                             aux_vector_b_0/np.linalg.norm(aux_vector_b_0))
+
+                for n, nucl in enumerate(self.oligos_list[o][s]):
+                    [vh_1, index_1, is_fwd_1] = self.oligos_list_to_nucleotide_info( o, s, n)
+                    [axis_1, backbone_1]      = self.nucleotide_matrix[vh_1][index_1][is_fwd_1].position
+
+                    if n < len(self.oligos_list[o][s]) - 1:
+                        [vh_2, index_2, is_fwd_2] = self.oligos_list_to_nucleotide_info(o, s, n + 1)
+                        [axis_2, backbone_2]      = self.nucleotide_matrix[vh_2][index_2][is_fwd_2].position
+                        
+                        base_vector_1     = axis_1     - backbone_1
+                        backbone_vector_1 = backbone_2 - backbone_1
+                    elif n == len(oligos_list[o][s]) - 1:
+                        [vh_2, index_2, is_fwd_2] = self.oligos_list_to_nucleotide_info(o, s, n - 1)
+                        [axis_2, backbone_2]      = self.nucleotide_matrix[vh_2][index_2][is_fwd_2].position
+                        base_vector_1     = axis_1 - backbone_1
+                        backbone_vector_1 = - (backbone_2 - backbone_1)
+
+                    aux_vector_a_1 = np.cross(base_vector_1, backbone_vector_1)
+                    aux_vector_b_1 = np.cross(aux_vector_a_1, base_vector_1)
+                    vect_list_1 = (base_vector_1+np.array([0.00001,0,0])/np.linalg.norm(base_vector_1+np.array([0.00001,0,0])), \
+                                 aux_vector_a_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_a_1+np.array([0.00001,0,0])), \
+                                 aux_vector_b_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_b_1+np.array([0.00001,0,0])))
+
+                    nucl = self.nucleotide_matrix[vh_1][index_1][is_fwd_1]
+                    nucl.vectors_body_frame  = vect_list_1
+                    nucl.points_global_frame = [backbone_1, axis_1, aux_vector_a_1 + backbone_1]
+                    nucl_quaternion          = vectortools.systemQuaternion(vect_list_0, vect_list_1)
+                    nucl.quaternion          = [nucl_quaternion.w, \
+                                                                              nucl_quaternion.x, \
+                                                                              nucl_quaternion.y, \
+                                                                              nucl_quaternion.z]
+
+                    self.nucleotide_matrix[vh_1][index_1][is_fwd_1] = nucl      #This line is unnecessary
+
+class DSNucleotide:
+    '''
+    Two sense/antisense nucleotide that are part of dsDNA strand
+    '''
+    def __init__(self):
+        self.fwd_nucleotide     = None      # Nucleotide in forward direction (reference frame)
+        self.rev_nucleotide     = None      # Nucleotide in reverse direction
+        self.type               = 1
+        self.visited            = False
+        self.rigid              = False
+
+        #Connections
+        self.rigid_connections  = []   #Rigid connections
+        self.soft_connections   = []   #Soft connections
+
+class SSNucleotide:
+    '''
+    Nucleotide that is part of ssDNA strand
+    '''
+    def __init__(self):
+        self.nucleotide        = None
+        self.type              = 0
+        self.visited           = False
+        self.rigid             = False
+
+        #Connections
+        self.rigid_connections = []  #Rigid connections
+        self.soft_connections  = []  #Soft connections
 
 class Nucleotide:
     '''
@@ -21,16 +607,21 @@ class Nucleotide:
     Attributes: index, position, strand, vh
     '''
     def __init__(self):
-        self.direction  = 1    #1 is fwd, -1 is reverse
-        self.global_pts = None # backbone, sidechain and aux points in global frame
-        self.index      = None # z position in cadnano's unit
-        self.body       = None # body this nucl belongs to (for relaxation)
-        self.ext_conn   = None # vh and id of nucleotide connected in other body
-        self.position   = None # positions of axis (sidechain) and backbone ptcls
-        self.quaternion = None # quaternion orientation for this nucleotide
-        self.strand	    = None # strand #
-        self.vectors    = None # orth vectors in the body ref. frame for quat calc
-        self.vh  	    = None # virtual helix this nucleotide belongs to
+        self.direction                    = None                            # 1 is fwd, 0 is reverse
+        self.is_fwd                       = None                            # 0: reverse, 1:forward
+        self.index                        = None                            # z position in cadnano's unit
+        self.strand                       = None                            # strand #
+        self.vh                           = None                            # virtual helix this nucleotide belongs to
+        
+        self.points_global_frame          = None                            # backbone, sidechain and aux points in global frame
+        self.quaternion                   = None                            # quaternion orientation for this nucleotide
+        self.vectors_body_frame           = None                            # orthogonal vectors in the body reference frame for quaternion calculation
+        self.position                     = None                            # Nucleotide position
+
+        #Body/simulation variables
+        self.body                         = None                            # body this nucleotide belongs to
+        self.body_num                     = 0                               # body number 
+        self.simulation_nucleotide_num    = 0                               # body nucleotide number
 
 class Body:
     '''
@@ -40,629 +631,347 @@ class Body:
     Attributes: vhs, com_position, com_quaternion, nucleotides
     '''
     def __init__(self):
-        self.com_position   = None
-        self.com_quaternion = None
-        self.moment_inertia = None
-        self.nucleotides    = []   # nucleotides composing the body
-        self.vhs            = set() # vhs composing the body
+        self.comass_position   = None
+        self.comass_quaternion = None
+        self.moment_inertia    = None
+        self.nucleotide_types  = []
+        self.nucleotides       = []
+        self.vhs               = []
+        self.type              = None   #0: soft, 1:rigid
 
-    def add_nucleotide(self, nucl):
-        self.nucleotides.append(nucl)
+    def add_nucleotide_type(self, nucleotide_type):
+        self.nucleotide_types.append(nucleotide_type)
+
     def add_vh(self, vh):
         self.vhs.add(vh)
 
-def oligoHelperList(oligo):
+    def initialize(self):
+        '''
+        Given a list of oligos, each composed of a list of strands
+        each composed of a list of nucleotides,
+        first populate each body's nucleotide and Vh and
+        then calculate the other attributes.
+        '''
+
+        positions = [nucleotide.position[1] for nucleotide in self.nucleotides]
+        self.comass_position    = vectortools.calculateCoM(positions)
+        self.moment_inertia     = vectortools.calculateMomentInertia(positions)
+        self.comass_quaternion  = [1., 0., 0., 0.]
+
+class RigidBodySimulation:
     '''
-    Given an oligo, returns the following list of useful properties
-    (strand, strand direction, virtual_helix_id, index)
-    for each nucleotide. List is oriented 5' to 3'
+    Rigid body simulation class for Cadnano designs
     '''
-    generator = oligo.strand5p().generator3pStrand()
-    oligo_helper_list = []
-    for strand in generator:
-        strand_helper_list = []
-        vh = strand.idNum()
-        index_5p = strand.idx5Prime()
-        index_3p = strand.idx3Prime()
 
-        direction = (-1 + 2*strand.isForward()) #-1 if backwards, 1 if fwd
-        for i in range(index_5p, index_3p + direction, direction):
-            strand_helper_list.append([strand, direction, vh, i])
-        oligo_helper_list.append(strand_helper_list)
-    return(oligo_helper_list)
+    def __init__(self):
+        self.origami                 = None
+        self.num_steps               = None
+        self.ssDNA_harmonic_bond     = {'r0':None, 'k0':None}
+        self.ssDNA_harmonic_angle    = {'a0':None, 'k0':None}
 
-def oligosArray(active_part):
-    '''
-    Given a origami part
-    Return an array with all oligos in part sorted by length
-    '''
-    oligos = active_part.oligos()
-    oligos_sorted_by_length = sorted(oligos, key=lambda x: x.length(), reverse=True)
-    return(oligos_sorted_by_length)
+        self.dsDNA_harmonic_bond     = {'r0':None, 'k0':None}
+        self.dsDNA_harmonic_angle    = {'a0':None, 'k0':None}
 
-def findCoordinates(vh, index):
-    '''
-    Given a vh and a index, returns (x,y,z)
-    for the sidechain pts and backbones fwd and rev
-    '''
-    axis_pts = part.getCoordinates(vh)[0][index]
-    fwd_pts = part.getCoordinates(vh)[1][index]
-    rev_pts = part.getCoordinates(vh)[2][index]
-    return [fwd_pts, axis_pts, rev_pts]
+        self.bodies_comass_positions = []
+        self.bodies_moment_inertia   = []
 
-def populateGlobalNuclMatrix(active_part):
-    '''
-    Creates an empty matrix of len = vh_length x index_length
-    to be populated with all nucleotides in part
-    This will be the global reference to any nucleotide
-    via global_nucl_matrix[vh][index][rev or fwd]
-    '''
-    global global_nucl_matrix
-    vhs_length = len(list(active_part.getIdNums()))
-    bases_length = active_part.getVirtualHelix(0).getSize()
-    global_nucl_matrix = [[[[] for k in range(2)] for i in range(bases_length)] for j in range(vhs_length)]
+        self.snapshot                = None
 
-def getNucleotide(nucl_pointers):
-    '''
-    Given a tuple of pointers in the form [vh, index, is_fwd],
-    Returns the global nucleotide referent to the pointers
-    '''
-    [vh, index, is_fwd] = nucl_pointers
-    return(global_nucl_matrix[vh][index][is_fwd])
+        self.body_types              = []
+        self.bond_types              = []
 
-def createOligosList(oligos_array, active_part):
-    '''
-    Given an array of oligos in part, returns a list of *oligos*,
-    each containing a list of *strands(), each containing a
-    list of *nucleotides() making up the part.
-    '''
-    global global_nucl_matrix
-    oligos_list = []
-    for oligo in oligos_array:
-        strand_list = populateBasicNucleotideAttributes(oligo, active_part)
-        oligos_list.append(strand_list)
-    return(oligos_list)
+        #Rigid/soft bodies from Origami structure
+        self.num_rigid_bodies        = 0
+        self.num_soft_bodies         = 0
+        self.rigid_bodies            = None
+        self.soft_bodies             = None
 
-def translateIndices(oligos_list, i, j, k):
-    '''
-    Oligos helper list gives a tuple list of pointers
-    of the type [vh, index, is_fwd] which are needed to
-    reference nucleotides in global_nucl_matrix
-    this function translates oligo_helper_list into
-    indices to be used by global_nucl_matrix
-    '''
-    [vh, index, is_fwd] = oligos_list[i][j][k]
-    return([vh, index, is_fwd])
+    def initialize_relax_md(self):
+        '''
+        Initialize relaxation protocol
+        '''
+        context.initialize("");
+        relax_sim = context.SimulationContext();
 
-def populateBasicNucleotideAttributes(oligo, active_part):
-    '''
-    Given an oligo, returns a list of strands,
-    each containing the pointers ([vh][index][is_fwd]) to the
-    nucleotides making up such strand and populate nucleotides matrix
-    with basic attributes (direction, index, position, strand, vh)
-    '''
-    global global_nucl_matrix
-    if global_nucl_matrix == []:
-        populateGlobalNuclMatrix(active_part) #start by pre-populating global var
+    def initialize_particles(self):
+        '''
+        Initialize particle positions, moment of inertia and velocities
+        '''
 
-    strand_list = []
-    for helper_strands in oligoHelperList(oligo):
-        nucleotides_list = []
-        for [strand, direction, vh, index] in helper_strands:
-            coordinates = findCoordinates(vh, index)
-            is_fwd = int((direction + 1)/2)
-            nucl = Nucleotide()
-            nucl.direction = direction
-            nucl.index = index
-            nucl.position = [coordinates[1], coordinates[1 + direction]] #side-chain, bckbone position
-            nucl.strand = strand
-            nucl.vh = vh
-            global_nucl_matrix[vh][index][is_fwd] = nucl
+        #Retrieve origami rigid body information
+        self.rigid_bodies = self.origami.rigid_bodies
+        self.soft_bodies  = self.origami.soft_bodies
 
-            nucleotides_list.append([vh, index, is_fwd])
-        strand_list.append(nucleotides_list)
-    return(strand_list)
+        self.num_rigid_bodies = len(self.rigid_bodies)
+        self.num_soft_bodies  = len(self.soft_bodies) 
 
-def populateAllNucleotideAttributes(oligos_list, active_part):
-    '''
-    Given an array of oligos, fills the remaining nucleotide attributes:
-    vectors, quaternion, global_pts
-    '''
-    global global_nucl_matrix
+        self.rigid_bodies_comass_positions  = [body.comass_position for body in self.rigid_bodies]
+        self.center_of_mass                 = np.average(np.asarray(self.rigid_bodies_comass_positions)[:,:3], axis=0)
 
-    for o, oligo in enumerate(oligos_list):
-        for s, strand in enumerate(oligo):
+        self.rigid_bodies_comass_positions -= self.center_of_mass
+        self.rigid_bodies_moment_inertia    = [body.moment_inertia for body in self.rigid_bodies]
+        
+        self.soft_bodies_comass_positions  = [body.comass_position for body in self.soft_bodies]
+        self.soft_bodies_comass_positions -= self.center_of_mass
+        self.soft_bodies_moment_inertia    = [body.moment_inertia for body in self.soft_bodies]
 
-            [vh_0, index_0, is_fwd_0] = translateIndices(oligos_list, 0, 0, 0)
-            [vh_1, index_1, is_fwd_1] = translateIndices(oligos_list, 0, 0, 1)
 
-            [axis_0, backbone_0] = global_nucl_matrix[vh_0][index_0][is_fwd_0].position
-            [axis_1, backbone_1] = global_nucl_matrix[vh_1][index_1][is_fwd_1].position
+        self.body_types  = ["rigid_body"+"_"+str(i) for i in range(self.num_rigid_bodies)]
+        self.body_types += ["nucleotides"]
 
-            base_vector_0 = axis_0 - backbone_0
-            backbone_vector_0 = backbone_1 - backbone_0
-            aux_vector_a_0 = np.cross(base_vector_0, backbone_vector_0)
-            aux_vector_b_0 = np.cross(aux_vector_a_0, base_vector_0)
-            # return 3 orthogonal vectors in nucleotide, for quaternion
-            vect_list_0 = (base_vector_0/np.linalg.norm(base_vector_0), \
-                         aux_vector_a_0/np.linalg.norm(aux_vector_a_0), \
-                         aux_vector_b_0/np.linalg.norm(aux_vector_b_0))
+        self.snapshot = data.make_snapshot(N = self.num_rigid_bodies+self.num_soft_bodies,
+                                          box = data.boxdim(Lx=120, Ly=120, Lz=300),
+                                          particle_types = self.body_types,
+                                          bond_types = ['body', 'interbody']);
 
-            for n, nucl in enumerate(oligos_list[o][s]):
-                [vh_1, index_1, is_fwd_1] = translateIndices(oligos_list, o, s, n)
-                [axis_1, backbone_1] = global_nucl_matrix[vh_1][index_1][is_fwd_1].position
+        self.snapshot.particles.position[:]       = np.vstack((self.rigid_bodies_comass_positions,self.soft_bodies_comass_positions))
+        self.snapshot.particles.moment_inertia[:] = np.vstack((self.rigid_bodies_moment_inertia  ,self.soft_bodies_moment_inertia))
 
-                if n < len(oligos_list[o][s]) - 1:
-                    [vh_2, index_2, is_fwd_2] = translateIndices(oligos_list, o, s, n + 1)
-                    [axis_2, backbone_2] = global_nucl_matrix[vh_2][index_2][is_fwd_2].position
-                    base_vector_1 = axis_1 - backbone_1
-                    backbone_vector_1 = backbone_2 - backbone_1
-                elif n == len(oligos_list[o][s]) - 1:
-                    [vh_2, index_2, is_fwd_2] = translateIndices(oligos_list, o, s, n - 1)
-                    [axis_2, backbone_2] = global_nucl_matrix[vh_2][index_2][is_fwd_2].position
-                    base_vector_1 = axis_1 - backbone_1
-                    backbone_vector_1 = - (backbone_2 - backbone_1)
-
-                aux_vector_a_1 = np.cross(base_vector_1, backbone_vector_1)
-                aux_vector_b_1 = np.cross(aux_vector_a_1, base_vector_1)
-                vect_list_1 = (base_vector_1+np.array([0.00001,0,0])/np.linalg.norm(base_vector_1+np.array([0.00001,0,0])), \
-                             aux_vector_a_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_a_1+np.array([0.00001,0,0])), \
-                             aux_vector_b_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_b_1+np.array([0.00001,0,0])))
-
-                nucl = global_nucl_matrix[vh_1][index_1][is_fwd_1]
-                nucl.vectors = vect_list_1
-                nucl.global_pts = [backbone_1, axis_1, aux_vector_a_1 + backbone_1]
-                nucl_quaternion = vTools.systemQuaternion(vect_list_0, vect_list_1)
-                nucl.quaternion = [nucl_quaternion.w, \
-                                                                          nucl_quaternion.x, \
-                                                                          nucl_quaternion.y, \
-                                                                          nucl_quaternion.z]
-                global_nucl_matrix[vh_1][index_1][is_fwd_1] = nucl
-
-############### relax ################
-## Functions needed for relaxation  ##
-######################################
-
-def distanceBetweenVhs(vh1, index1, vh2, index2):
-    '''
-    Given 2 points(vh, index), calculates the
-    Euclian distance between them
-    '''
-    pos1 = findCoordinates(vh1, index1)[1]
-    pos2 = findCoordinates(vh2, index2)[1]
-    distance = np.linalg.norm(pos1 - pos2)
-    return(distance)
-
-def connection3p(strand):
-    '''
-    Given a strand, returns the vhelix to which the 3p end
-    connects to, if the distance is not too far
-    '''
-    global global_connections_pairs
-    if strand.connection3p() != None:
-            vh_1 = strand.idNum()
-            index_1 = strand.idx3Prime()
-            vh_2 = strand.connection3p().idNum()
-            index_2 = strand.connection3p().idx5Prime()
-            distance = distanceBetweenVhs(vh_1, index_1, vh_2, index_2)
-            if distance < 6.0:
-                return(vh_2)
-            else:
-                is_fwd_1 = int(strand.isForward())
-                is_fwd_2 = int(strand.connection3p().isForward())
-                conn_pointer_1 = [vh_1, index_1, is_fwd_1]
-                conn_pointer_2 = [vh_2, index_2, is_fwd_2]
-                if [conn_pointer_2, conn_pointer_1] not in global_connections_pairs:
-                    global_connections_pairs.append([conn_pointer_1, conn_pointer_2])
-
-def connection5p(strand):
-    '''
-    Given a strand, returns the vhelix to which the 5p end
-    connects to, if the distance is not too far
-    '''
-    global global_connections_pairs
-    if strand.connection5p() != None:
-            vh_1 = strand.idNum()
-            index_1 = strand.idx5Prime()
-            vh_2 = strand.connection5p().idNum()
-            index_2 = strand.connection5p().idx3Prime()
-            distance = distanceBetweenVhs(vh_1, index_1, vh_2, index_2)
-            if distance < 6.0:
-                return(vh_2)
-            else:
-                is_fwd_1 = int(strand.isForward())
-                is_fwd_2 = int(strand.connection5p().isForward())
-                conn_pointer_1 = [vh_1, index_1, is_fwd_1]
-                conn_pointer_2 = [vh_2, index_2, is_fwd_2]
-                if [conn_pointer_2, conn_pointer_1] not in global_connections_pairs:
-                    global_connections_pairs.append([conn_pointer_1, conn_pointer_2])
-
-def calculateConnections(vh):
-    '''
-    Given a vh number, returns the set of neighboring vhs,
-    where a neighbor has a *staple* connection with vh
-    that is closer than dist = 10.0
-    '''
-    staple_strandSet = part.getStrandSets(vh)[not(vh % 2)] #staple strands only
-    scaffold_strandSet = part.getStrandSets(vh)[(vh % 2)]
-    connections = set()
-    for strand in staple_strandSet:
-        if connection3p(strand) != None:
-            connections.add(connection3p(strand))
-        if connection5p(strand) != None:
-            connections.add(connection5p(strand))
-    for strand in scaffold_strandSet:
-        if connection3p(strand) != None:
-            connections.add(connection3p(strand))
-        if connection5p(strand) != None:
-            connections.add(connection5p(strand))
-    return(connections)
-
-def separateOrigamiParts(part):
-    '''
-    Separates the origami 'part' into bodies
-    by evaluating if a vh is connected to others
-    see: 'calculateConnections'
-    '''
-    vhs_list = list(part.getIdNums())
-    bodies = []
-
-    for vh in vhs_list: #loop over the vhs of part
-        body_index = None
-        vh_connections = calculateConnections(vh)
-        for b, body in enumerate(bodies): #loop over potential bodies already seen
-            if vh in body: #this vh is part of a known body
-                body_index = b
-                break
-            elif vh_connections.intersection(body) != set():
-            #one of the connections belongs to an known body
-                body_index = b
-                break
-        if body_index == None: # not vh nor its connections are in known bodies
-            body_index = len(bodies)
-            bodies.append(set())
-
-        bodies[body_index].add(vh)
-        bodies[body_index].update(vh_connections)
-    return(bodies)
-
-def populateBodiesNuclAndVhs(oligos_list):
-    '''
-    Given a list of oligos, each composed of a list of strands
-    each composed of a list of nucleotides, find out which body
-    each nucleotide belongs to and add it to the corresponding
-    body set.
-    '''
-    global global_nucl_matrix
-
-    vhs_of_body = separateOrigamiParts(part)
-    vhs_of_body_list = list(vhs_of_body)
-    num_bodies = len(vhs_of_body_list)
-    bodies = [Body() for i in range(num_bodies)]
-
-    for o, oligo in enumerate(oligos_list):
-        for s, strand in enumerate(oligo):
-            for n, nucl in enumerate(strand):
-                # seach in each body for this nucleotides' vh, assign to body
-                [vh_1, index_1, is_fwd_1] = translateIndices(oligos_list, o, s, n)
-                this_nucl = global_nucl_matrix[vh_1][index_1][is_fwd_1]
-                body_id = [i for i in range(num_bodies) if this_nucl.vh in vhs_of_body[i]][0]
-                this_nucl.body = body_id
-                bodies[body_id].add_nucleotide(this_nucl)
-                bodies[body_id].add_vh(this_nucl.vh)
-    return(bodies)
-
-def populateBody(oligos_list):
-    '''
-    Given a list of oligos, each composed of a list of strands
-    each composed of a list of nucleotides,
-    first populate each body's nucleotide and Vh and
-    then calculate the other attributes.
-    '''
-    bodies = populateBodiesNuclAndVhs(oligos_list)
-
-    for body in bodies:
-        positions = [nucl.position[1] for nucl in body.nucleotides]
-        body.com_position = vTools.calculateCoM(positions)
-        body.moment_inertia = vTools.calculateMomentInertia(positions)
-        body.com_quaternion = [1., 0., 0., 0.]
-    return(bodies)
-
-def findNuclPosition(nucl_pointer, bodies_list, global_ref = True):
-    '''
-    Given a nucleotide pointer = [vh, index, is_fwd]
-    and a list of bodies already computed
-    Returns the location of the nucleotide in the body
-    if global = True, returns the location w.r.t.
-    first nucleotide in body = 0
-    '''
-    my_nucl = getNucleotide(nucl_pointer)
-    my_body = my_nucl.body
-    position = [n for n, nucl in enumerate(bodies_list[my_body].nucleotides) \
-                if nucl == my_nucl][0]
-    if global_ref:
-        for b in range(my_body):
-            position += len(bodies_list[b].nucleotides)
-
-    return(position)
-
-############# cad #################
-# start cadnano and read input file
-###################################
-
-app = cadnano.app()
-doc = app.document = Document()
-doc.readFile(INPUT_FILENAME);
-part = doc.activePart()
-oligos_array = oligosArray(part)
-
-oligos_list = createOligosList(oligos_array, part)
-populateAllNucleotideAttributes(oligos_list, part)
-bodies = populateBody(oligos_list)
-
-############# hoomd ################################################
-# Start HOOMD code
-####################################################################
-
-from hoomd import *
-from hoomd import md
-
-# Start HOOMD in two different contexts
-context.initialize("");
-relax_sim = context.SimulationContext();
-MD_sim = context.SimulationContext();
-
-if RELAX == True:
-    with relax_sim:
-        num_rigid_bodies = len(bodies)
-
-        bodies_com_positions = [body.com_position for body in bodies]
-        bodies_com_positions -= np.average(np.asarray(bodies_com_positions)[:,:3], axis=0)
-
-        bodies_mom_inertia = [body.moment_inertia for body in bodies]
-        body_types = ["body"+"_"+str(i) for i in range(num_rigid_bodies)]
-        body_types.append('nucleotides')
-
-        snapshot = data.make_snapshot(N = num_rigid_bodies,
-                                      box = data.boxdim(Lx=120, Ly=120, Lz=300),
-                                      particle_types=body_types,
-                                      bond_types = ['body', 'interbody']);
-
-        snapshot.particles.position[:] = bodies_com_positions
-        snapshot.particles.moment_inertia[:] = bodies_mom_inertia
         #particle types
-        for i in range(len(bodies)):
-            snapshot.particles.typeid[i] = i
+        for i in range(self.num_rigid_bodies):
+            self.snapshot.particles.typeid[i] = i
 
-        snapshot.particles.velocity[:] = np.random.normal(0.0,
-                                         np.sqrt(0.8 / 1.0), [snapshot.particles.N, 3]);
+        #particle types
+        for i in range(self.num_rigid_bodies,self.num_rigid_bodies+self.num_soft_bodies):
+            self.snapshot.particles.typeid[i] = self.num_rigid_bodies
 
-        # Bonds between connected rigid bodies
-        def bodyConnections():
-            connections = []
-            for conn in global_connections_pairs:
-                nucl0 = getNucleotide(conn[0])
-                nucl1 = getNucleotide(conn[1])
-                if [nucl1.body, nucl0.body] and [nucl0.body, nucl1.body] not in connections:
-                    connections.append([nucl0.body, nucl1.body])
-            return(connections)
+        self.snapshot.particles.velocity[:] = np.random.normal(0.0, np.sqrt(0.8 / 1.0), [self.snapshot.particles.N, 3]);
 
-        #create very weak bonds between com that are connected
-        bonds = bodyConnections()
-        snapshot.bonds.resize(len(bonds))
-        snapshot.bonds.group[:] = bonds
+    def create_rigid_bodies(self):
+        #create very weak bonds between rigid body comass that are connected
+        self.body_bonds = self.origami.inter_rigid_body_connections
+        self.snapshot.bonds.resize(len(self.body_bonds))
+        self.snapshot.bonds.group[:]  = self.body_bonds
+        self.snapshot.bonds.typeid[:] = ['body']*len(self.body_bonds)
 
         # Read the snapshot and create neighbor list
-        system = init.read_snapshot(snapshot);
-        nl = md.nlist.stencil();
+        self.system = init.read_snapshot(self.snapshot);
+        self.nl     = md.nlist.stencil();
 
         # Create rigid particles
-        rigid = md.constrain.rigid();
-        for b, body in enumerate(bodies):
-            body_type = body_types[b]
-            nucl_positions = [nucl.position[1] for nucl in body.nucleotides]
-            # move particles to body reference frame
-            nucl_positions -= body.com_position
-            rigid.set_param(body_type, \
-                        types=['nucleotides']*len(nucl_positions), \
-                        positions = nucl_positions); #magic numbers. Check !!!
+        self.rigid = md.constrain.rigid();
+        for b, body in enumerate(self.rigid_bodies):
+            body_type            = self.body_types[b]
 
-        rigid.create_bodies()
+            nucleotide_positions = [nucleotide.position[1] for nucleotide in body.nucleotides]
+            #move particles to body reference frame
+            nucleotide_positions -= body.comass_position
+            self.rigid.set_param(body_type, \
+                        types=['nucleotides']*len(nucleotide_positions), \
+                        positions = nucleotide_positions);
 
-        harmonic = md.bond.harmonic()
-        harmonic.bond_coeff.set('body', k=0.001, r0=10);
-        harmonic.bond_coeff.set('interbody', k=0.1, r0=1.0)
+        self.rigid.create_bodies()
+
+
+    def create_bonds(self):
+        '''
+        Create interbody bonds
+        '''
+        self.nucleotide_bonds = self.origami.inter_nucleotide_connections
+        
+        for connection in self.nucleotide_bonds:
+            delta = self.num_rigid_bodies
+            nucleotide_num_1,nucleotide_num_2 = connection
+            self.system.bonds.add('interbody', delta + nucleotide_num_1, delta + nucleotide_num_2)
+        
+    def set_harmonic_bonds(self):
+        '''
+        Set harmonic bonds
+        '''
+        self.harmonic = md.bond.harmonic()
+        self.harmonic.bond_coeff.set('body'     , k=0.001  , r0= 10);
+        self.harmonic.bond_coeff.set('interbody', k=0.1    , r0=1.0);
 
         # fix diameters for vizualization
-        for i in range(0, num_rigid_bodies):
-            system.particles[i].diameter = 4.0
-        for i in range(num_rigid_bodies, len(system.particles)):
-            system.particles[i].diameter = 0.3
+        for i in range(0, self.num_rigid_bodies):
+            self.system.particles[i].diameter = 4.0
+        for i in range(self.num_rigid_bodies, len(self.system.particles)):
+            self.system.particles[i].diameter = 0.3
 
-        ## Interbody bonds
-        for conn in global_connections_pairs:
-            nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
-            nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
-            delta = num_rigid_bodies
-
-            system.bonds.add('interbody', delta + nucl_0_body_location, delta + nucl_1_body_location)
-
-        ########## INTERACTIONS ############
-        # LJ interactions
-        wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
+    def set_lj_potentials(self):
+        '''
+        Set LJ potentials
+        '''
+        wca = md.pair.lj(r_cut=2.0**(1/6), nlist=self.nl)
         wca.set_params(mode='shift')
-        wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
+        wca.pair_coeff.set(self.body_types, self.body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
 
         ########## INTEGRATION ############
-        md.integrate.mode_standard(dt=0.005, aniso=True);
-        rigid = group.rigid_center();
-        md.integrate.langevin(group=rigid, kT=0.5, seed=42);
+        md.integrate.mode_standard(dt=0.001, aniso=True);
+        rigid     = group.rigid_center();
+        non_rigid = group.nonrigid()
+        combined  = group.union('combined',rigid,non_rigid)
+        md.integrate.langevin(group=combined, kT=0.1, seed=42);
 
+        #fire=md.integrate.mode_minimize_fire( group=combined,dt=0.01, ftol=1e-3, Etol=1e-7)
+        
         ########## DUMP & RUN ############
         dump.gsd("output/tripod_relax.gsd",
-                       period=1e5,
+                       period=1e4,
                        group=group.all(),
                        static=[],
                        overwrite=True);
-
+    def run(self):
         run(2e5)
 
-        #update global particle positions and quaternions
-        i = num_rigid_bodies
-        for b, body in enumerate(bodies):
-            for nucl in body.nucleotides:
-                vh = nucl.vh
-                index = nucl.index
-                is_fwd = int((nucl.direction + 1)/2)
-                nucl_position = system.particles[i].position
+        
 
-                nucl_quaternion_new = system.particles[i].orientation
-                nucl_quaternion_new = vTools.quat2Quat(nucl_quaternion_new)
-                nucl_quaternion_old = nucl.quaternion
-                nucl_quaternion_old = vTools.quat2Quat(nucl_quaternion_old)
-                quat = nucl_quaternion_new * nucl_quaternion_old
-                quat = [quat.w, quat.x, quat.y, quat.z]
-                global_nucl_matrix[vh][index][is_fwd].position[1] = nucl_position
-                global_nucl_matrix[vh][index][is_fwd].quaternion = quat
-                i += 1
+def main():
+    ############# cad #################
+    # start cadnano and read input file
+    ###################################
 
+    app = cadnano.app()
+    doc = app.document = Document()
+    INPUT_FILENAME = 'input/tripod.json'
+    doc.readFile(INPUT_FILENAME);
+    
+    #Parse the structure for simulation
+    new_origami      = Origami()
+    new_origami.part = doc.activePart()
+    new_origami.list_oligos()
+    new_origami.initialize_nucleotide_matrix()
+    new_origami.create_oligos_list()
+    new_origami.get_connections()
+    new_origami.assign_nucleotide_types()
+    new_origami.assign_nucleotide_connections()
+    new_origami.cluster_into_bodies()
+    new_origami.parse_soft_connections()
 
-        import pickle
-        with open('global.pckl', 'wb') as f:
-            pickle.dump(global_nucl_matrix, f)
-
-if RELAX == False:
-    with MD_sim:
-        #read global_nucl_matrix from pickle file
-        import pickle
-        f = open('global.pckl', 'rb')
-        global_nucl_matrix = pickle.load(f)
-        f.close()
-
-        num_oligos = len(oligos_list)
-        nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
-                            for strand in chain for pointer in strand]
-        total_num_nucl = len(nucl_positions)
-
-        snapshot = data.make_snapshot(N = total_num_nucl,
-                                      box = data.boxdim(Lx=120, Ly=120, Lz=120),
-                                      particle_types=['backbone','sidechain','aux'],
-                                      bond_types = ['backbone','aux_sidechain'],
-                                      dihedral_types = ['dihedral1', \
-                                                        'dihedral21',\
-                                                        'dihedral22',\
-                                                        'dihedral31',\
-                                                        'dihedral32']);
-
-        # particle positions, types and moments of inertia
-        nucl_positions = [getNucleotide(pointer).position[1] for chain in oligos_list \
-                            for strand in chain for pointer in strand]
-        nucl_quaternions = [getNucleotide(pointer).quaternion for chain in oligos_list \
-                            for strand in chain for pointer in strand]
-
-        snapshot.particles.position[:] = nucl_positions
-        snapshot.particles.orientation[:] = nucl_quaternions
-        snapshot.particles.moment_inertia[:] = [[1.,1.,1.]] #not correct. fix it
-        snapshot.particles.typeid[:] = [0];
-
-        # Backbone bonds
-        bonds = []
-        i = 0
-        for chain in oligos_list:
-            flat_chain = np.concatenate(chain)
-            for n in range(i, i + len(flat_chain) - 1):
-                bonds.append([n, n+1])
-            i += len(flat_chain)
-
-        #fix: add extra bond for circular staples / scaffold
-        snapshot.bonds.resize(len(bonds))
-        snapshot.bonds.group[:] = bonds
-
-        # Read the snapshot and create neighbor list
-        system = init.read_snapshot(snapshot);
-        nl = md.nlist.cell();
-
-        ############ BONDS ############
-        #rigid
-        nucl0 = getNucleotide(oligos_list[0][0][0])
-        rigid = md.constrain.rigid();
-        rigid.set_param('backbone', \
-                        types=['sidechain','aux'], \
-                        positions = [0.9*nucl0.vectors[0], 0.4*nucl0.vectors[1]]); #magic numbers. Check !!!
-        rigid.create_bodies()
-
-        #harmonic
-        harmonic1 = md.bond.harmonic()
-        harmonic1.bond_coeff.set('backbone', k=5.0, r0=0.75)
-        harmonic1.bond_coeff.set('aux_sidechain', k=00.0, r0=0.1) #needed so sidechains in a chain dont interact
-
-        #dihedrals
-        def harmonicAngle(theta, kappa, theta0):
-           V = 0.5 * kappa * (theta-theta0)**2;
-           F = -kappa*(theta-theta0);
-           return (V, F)
-
-        index_1st_nucl_in_strand = 0
-        for chain in range(len(oligos_list)):
-            for strand in range(len(oligos_list[chain])):
-                for nucl in range(len(oligos_list[chain][strand]) - 2):
-
-                    bckbone_1 = index_1st_nucl_in_strand + nucl
-                    sidechain_1 = total_num_nucl + 2*index_1st_nucl_in_strand + 2*nucl
-                    aux_1 = sidechain_1 + 1
-
-                    bckbone_2 = bckbone_1 + 1
-                    sidechain_2 = sidechain_1 + 2
-                    aux_2 = aux_1 + 2
-
-                    system.dihedrals.add('dihedral1',  sidechain_1, bckbone_1, bckbone_2, sidechain_2)
-                    system.dihedrals.add('dihedral21', sidechain_1, bckbone_1, aux_1, bckbone_2)
-                    system.dihedrals.add('dihedral22', sidechain_2, bckbone_2, aux_2, bckbone_1)
-                    system.dihedrals.add('dihedral31', aux_1, bckbone_1, sidechain_1, bckbone_2)
-                    system.dihedrals.add('dihedral32', aux_2, bckbone_2, sidechain_2, bckbone_1)
-
-                    system.bonds.add('aux_sidechain', sidechain_1, sidechain_2)
-
-                index_1st_nucl_in_strand += len(oligos_list[chain][strand])
-
-        dtable = md.dihedral.table(width=1000)
-        dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=50, theta0=-0.28))
-        dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.30))
-        dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.30))
-        dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.57))
-        dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.57))
-
-        # fix diameters for vizualization
-        for i in range(0, total_num_nucl):
-            system.particles[i].diameter = 0.8
-        for i in range(total_num_nucl, len(system.particles), 2):
-            system.particles[i].diameter = 0.3
-            system.particles[i + 1].diameter = 0.1
-
-        ######### INTERACTIONS ############
-        # LJ interactions
-        wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
-        wca.set_params(mode='shift')
-        wca.pair_coeff.set('backbone', 'backbone',   epsilon=1.0, sigma=0.750, r_cut=0.750*2**(1/6))
-        wca.pair_coeff.set('backbone', 'sidechain',  epsilon=1.0, sigma=0.375, r_cut=0.375*2**(1/6))
-        wca.pair_coeff.set('sidechain', 'sidechain', epsilon=1.0, sigma=0.100, r_cut=0.4)
-        wca.pair_coeff.set('backbone', 'aux',        epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-        wca.pair_coeff.set('aux', 'sidechain',       epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-        wca.pair_coeff.set('aux', 'aux',             epsilon=0.0, sigma=1.000, r_cut=1.000*2**(1/6))
-
-        ########## INTEGRATION ############
-        md.integrate.mode_standard(dt=0.003, aniso=True);
-        rigid = group.rigid_center();
-        md.integrate.langevin(group=rigid, kT=0.1, seed=42);
-        ########## DUMP & RUN ############
-        dump.gsd("output/tripod_MD.gsd",
-                       period=1000,
-                       group=group.all(),
-                       static=[],
-                       overwrite=True);
-        run(1e6);
+    #Prepare the simulation
+    new_simulation         = RigidBodySimulation()
+    new_simulation.origami = new_origami
+    new_simulation.initialize_relax_md()
+    new_simulation.initialize_particles()
+    new_simulation.create_rigid_bodies()
+    new_simulation.create_bonds()
+    new_simulation.set_harmonic_bonds()
+    new_simulation.set_lj_potentials()
+    new_simulation.run()
 
 
+    ############# hoomd ################################################
+    # Start HOOMD code
+    ####################################################################
 
-#
-#
+    # Start HOOMD in two different contexts
+    #
+    #
+    #MD_sim    = context.SimulationContext();
+
+    '''
+    if RELAX == True:
+        with relax_sim:
+            num_rigid_bodies = len(bodies)
+
+            bodies_com_positions = [body.com_position for body in bodies]
+            bodies_com_positions -= np.average(np.asarray(bodies_com_positions)[:,:3], axis=0)
+
+            bodies_mom_inertia = [body.moment_inertia for body in bodies]
+            body_types = ["body"+"_"+str(i) for i in range(num_rigid_bodies)]
+            body_types.append('nucleotides')
+
+            snapshot = data.make_snapshot(N = num_rigid_bodies,
+                                          box = data.boxdim(Lx=120, Ly=120, Lz=300),
+                                          particle_types = body_types,
+                                          bond_types = ['body', 'interbody']);
+
+            snapshot.particles.position[:] = bodies_com_positions
+            snapshot.particles.moment_inertia[:] = bodies_mom_inertia
+            #particle types
+            for i in range(len(bodies)):
+                snapshot.particles.typeid[i] = i
+
+            snapshot.particles.velocity[:] = np.random.normal(0.0,
+                                             np.sqrt(0.8 / 1.0), [snapshot.particles.N, 3]);
+
+            # Bonds between connected rigid bodies
+           
+
+            #create very weak bonds between com that are connected
+            bonds = bodyConnections()
+            snapshot.bonds.resize(len(bonds))
+            snapshot.bonds.group[:] = bonds
+
+            # Read the snapshot and create neighbor list
+            system = init.read_snapshot(snapshot);
+            nl = md.nlist.stencil();
+
+            # Create rigid particles
+            rigid = md.constrain.rigid();
+            for b, body in enumerate(bodies):
+                body_type = body_types[b]
+                nucl_positions = [nucl.position[1] for nucl in body.nucleotides]
+                # move particles to body reference frame
+                nucl_positions -= body.com_position
+                rigid.set_param(body_type, \
+                            types=['nucleotides']*len(nucl_positions), \
+                            positions = nucl_positions); #magic numbers. Check !!!
+
+            rigid.create_bodies()
+
+            harmonic = md.bond.harmonic()
+            harmonic.bond_coeff.set('body', k=0.001, r0=10);
+            harmonic.bond_coeff.set('interbody', k=0.1, r0=1.0)
+
+            # fix diameters for vizualization
+            for i in range(0, num_rigid_bodies):
+                system.particles[i].diameter = 4.0
+            for i in range(num_rigid_bodies, len(system.particles)):
+                system.particles[i].diameter = 0.3
+
+            ## Interbody bonds
+            for conn in global_connections_pairs:
+                nucl_0_body_location = findNuclPosition(conn[0], bodies, True)
+                nucl_1_body_location = findNuclPosition(conn[1], bodies, True)
+                delta = num_rigid_bodies
+
+                system.bonds.add('interbody', delta + nucl_0_body_location, delta + nucl_1_body_location)
+
+            ########## INTERACTIONS ############
+            # LJ interactions
+            wca = md.pair.lj(r_cut=2.0**(1/6), nlist=nl)
+            wca.set_params(mode='shift')
+            wca.pair_coeff.set(body_types, body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
+
+            ########## INTEGRATION ############
+            md.integrate.mode_standard(dt=0.005, aniso=True);
+            rigid = group.rigid_center();
+            md.integrate.langevin(group=rigid, kT=0.5, seed=42);
+
+            ########## DUMP & RUN ############
+            dump.gsd("output/tripod_relax.gsd",
+                           period=1e5,
+                           group=group.all(),
+                           static=[],
+                           overwrite=True);
+
+            run(2e5)
+
+            #update global particle positions and quaternions
+            i = num_rigid_bodies
+            for b, body in enumerate(bodies):
+                for nucl in body.nucleotides:
+                    vh = nucl.vh
+                    index = nucl.index
+                    is_fwd = int(nucl.direction > 0)s
+                    nucl_position = system.particles[i].position
+
+                    nucl_quaternion_new = system.particles[i].orientation
+                    nucl_quaternion_new = vectortools.quat2Quat(nucl_quaternion_new)
+                    nucl_quaternion_old = nucl.quaternion
+                    nucl_quaternion_old = vectortools.quat2Quat(nucl_quaternion_old)
+                    quat = nucl_quaternion_new * nucl_quaternion_old
+                    quat = [quat.w, quat.x, quat.y, quat.z]
+                    global_nucl_matrix[vh][index][is_fwd].position[1] = nucl_position
+                    global_nucl_matrix[vh][index][is_fwd].quaternion = quat
+                    i += 1
+
+
+            import pickle
+            with open('global.pckl', 'wb') as f:
+                pickle.dump(global_nucl_matrix, f)
+
+    '''
+if __name__ == "__main__":
+  main()
