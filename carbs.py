@@ -6,7 +6,7 @@ import vector_tools as vTools #needed for vector / quaternion calculations
 
 ####### USER DEFINED AND GLOBAL VARIABLES ######
 INPUT_FILENAME = 'input/tripod.json'
-RELAX = False
+RELAX = True
 
 global_nucl_matrix = []
 global_connections_pairs = []
@@ -245,7 +245,7 @@ def connection3p(strand):
             vh_2 = strand.connection3p().idNum()
             index_2 = strand.connection3p().idx5Prime()
             distance = distanceBetweenVhs(vh_1, index_1, vh_2, index_2)
-            if distance < 6.0:
+            if distance < 6.0: #magic number. needs to be checked for robustness
                 return(vh_2)
             else:
                 is_fwd_1 = int(strand.isForward())
@@ -267,7 +267,7 @@ def connection5p(strand):
             vh_2 = strand.connection5p().idNum()
             index_2 = strand.connection5p().idx3Prime()
             distance = distanceBetweenVhs(vh_1, index_1, vh_2, index_2)
-            if distance < 6.0:
+            if distance < 6.0: #magic number. needs to be checked for robustness
                 return(vh_2)
             else:
                 is_fwd_1 = int(strand.isForward())
@@ -465,7 +465,7 @@ if RELAX == True:
             nucl_positions -= body.com_position
             rigid.set_param(body_type, \
                         types=['nucleotides']*len(nucl_positions), \
-                        positions = nucl_positions); #magic numbers. Check !!!
+                        positions = nucl_positions);
 
         rigid.create_bodies()
 
