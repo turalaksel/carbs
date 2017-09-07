@@ -221,7 +221,6 @@ class Origami:
                 self.nucleotide_type_matrix[vh1][idx1].soft_connections.append(self.nucleotide_type_matrix[vh2][idx2])
                 self.nucleotide_type_matrix[vh1][idx1].soft_connections.append(self.nucleotide_type_matrix[vh2][idx2])
                 self.soft_connections[pointer1] = pointer2
-                print(pointer1,pointer2)
 
         #3. Add the crossover connections
         for pointer_1, pointer_2 in self.crossovers.items():
@@ -909,8 +908,8 @@ def main():
     #Initialize cadnano 
     app = cadnano.app()
     doc = app.document = Document()
-    INPUT_FILENAME  = '../data/Hinge_v5.1-L1-R1.json'
-    OUTPUT_FILENAME = '../data/Hinge_v5.1-L1-R1.gsd'
+    INPUT_FILENAME  = '../data/Hinge_v5.1-L1-R1-original-ssDNA-spring2.json'
+    OUTPUT_FILENAME = '../data/Hinge_v5.1-L1-R1-original-ssDNA-spring2.gsd'
     
     doc.readFile(INPUT_FILENAME);
     
@@ -928,7 +927,6 @@ def main():
     new_origami.cluster_into_bodies()
     new_origami.parse_soft_connections()
 
-    
     #Prepare the simulation
     new_simulation         = RigidBodySimulation()
     new_simulation.origami = new_origami
