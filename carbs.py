@@ -6,7 +6,7 @@ import vector_tools as vTools #needed for vector / quaternion calculations
 
 ####### USER DEFINED AND GLOBAL VARIABLES ######
 INPUT_FILENAME = 'input/tripod.json'
-RELAX = True
+RELAX = False
 
 global_nucl_matrix = []
 global_connections_pairs = []
@@ -626,11 +626,11 @@ if RELAX == False:
                 index_1st_nucl_in_strand += len(oligos_list[chain][strand])
 
         dtable = md.dihedral.table(width=1000)
-        dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=50, theta0=-0.28))
-        dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.30))
-        dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.30))
-        dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=50, theta0=-1.57))
-        dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=50, theta0=+1.57))
+        dtable.dihedral_coeff.set('dihedral1',  func=harmonicAngle, coeff=dict(kappa=150, theta0=-0.28))
+        dtable.dihedral_coeff.set('dihedral21', func=harmonicAngle, coeff=dict(kappa=150, theta0=+1.30))
+        dtable.dihedral_coeff.set('dihedral22', func=harmonicAngle, coeff=dict(kappa=150, theta0=-1.30))
+        dtable.dihedral_coeff.set('dihedral31', func=harmonicAngle, coeff=dict(kappa=150, theta0=-1.57))
+        dtable.dihedral_coeff.set('dihedral32', func=harmonicAngle, coeff=dict(kappa=150, theta0=+1.57))
 
         # fix diameters for vizualization
         for i in range(0, total_num_nucl):
@@ -660,7 +660,7 @@ if RELAX == False:
                        group=group.all(),
                        static=[],
                        overwrite=True);
-        run(1e6);
+        run(1e5);
 
 
 
