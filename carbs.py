@@ -908,8 +908,8 @@ def main():
     #Initialize cadnano 
     app = cadnano.app()
     doc = app.document = Document()
-    INPUT_FILENAME  = '../data/Hinge_v5.1-L1-R1-original-ssDNA-spring2.json'
-    OUTPUT_FILENAME = '../data/Hinge_v5.1-L1-R1-original-ssDNA-spring2.gsd'
+    INPUT_FILENAME  = 'input/Hinge_v5.1-L1-R1-original.json'
+    OUTPUT_FILENAME = 'output/Hinge_v5.1-L1-R1-original.gsd'
     
     doc.readFile(INPUT_FILENAME);
     
