@@ -819,7 +819,7 @@ class RigidBodySimulation:
         Set harmonic bonds
         '''
         self.harmonic = md.bond.harmonic()
-        self.harmonic.bond_coeff.set('interbody', k=10.0    , r0=0.5);
+        self.harmonic.bond_coeff.set('interbody', k=1.0    , r0=0.5);
 
         # fix diameters for vizualization
         for i in range(0, self.num_rigid_bodies):
@@ -882,7 +882,7 @@ def main():
     app = cadnano.app()
     doc = app.document = Document()
     INPUT_FILENAME  = '../cadnano-files/PFD_tripod_2017.json'
-    OUTPUT_FILENAME = '../cadnano-files/carbs_output/PFD_tripod_2017.gsd'
+    OUTPUT_FILENAME = '../carbs-output/PFD_tripod_2017.gsd'
 
     doc.readFile(INPUT_FILENAME);
 
