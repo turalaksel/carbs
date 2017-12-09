@@ -1,7 +1,16 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# @Date    : 2017-12-09 13:25:51
+# @Author  : Tural Aksel (turalaksel@gmail.com)
+# @Link    : http://example.org
+# @Version : $Id$
+
 import numpy as np
 import cadnano
 import vectortools
 import functools
+import argparse
+import os
 
 from cadnano.document import Document
 from hoomd import *
@@ -710,27 +719,37 @@ class RigidBodySimulation:
     '''
 
     def __init__(self):
-        self.origami                 = None
-        self.num_steps               = None
-        self.ssDNA_harmonic_bond     = {'r0':None, 'k0':None}
-        self.ssDNA_harmonic_angle    = {'a0':None, 'k0':None}
+        self.origami                  = None
+        self.num_steps                = None
+        self.ssDNA_harmonic_bond      = {'r0':None, 'k0':None}
+        self.ssDNA_harmonic_angle     = {'a0':None, 'k0':None}
 
-        self.dsDNA_harmonic_bond     = {'r0':None, 'k0':None}
-        self.dsDNA_harmonic_angle    = {'a0':None, 'k0':None}
+        self.dsDNA_harmonic_bond      = {'r0':None, 'k0':None}
+        self.dsDNA_harmonic_angle     = {'a0':None, 'k0':None}
 
-        self.bodies_comass_positions = []
-        self.bodies_moment_inertia   = []
+        self.interbody_harmonic_bond  = {'r0':None, 'k0':None}
+        self.interbody_harmonic_angle = {'a0':None, 'k0':None}
 
-        self.snapshot                = None
+        self.bodies_comass_positions  = []
+        self.bodies_moment_inertia    = []
 
-        self.body_types              = []
-        self.bond_types              = []
+        self.snapshot                 = None
+
+        self.body_types               = []
+        self.bond_types               = []
 
         #Rigid/soft bodies from Origami structure
-        self.num_rigid_bodies        = 0
-        self.num_soft_bodies         = 0
-        self.rigid_bodies            = None
-        self.soft_bodies             = None
+        self.num_rigid_bodies         = 0
+        self.num_soft_bodies          = 0
+        self.rigid_bodies             = None
+        self.soft_bodies              = None
+
+    def set_interbody_harmonic_bond(self,r0=0.5,k0=1.0):
+        '''
+        Set interbody harmonic bond parameters
+        '''
+        self.interbody_harmonic_bond['r0'] = r0
+        self.interbody_harmonic_bond['k0'] = k0
 
     def initialize_relax_md(self):
         '''
@@ -814,12 +833,12 @@ class RigidBodySimulation:
             nucleotide_num_1, nucleotide_num_2 = connection
             self.system.bonds.add('interbody', delta + nucleotide_num_1, delta + nucleotide_num_2)
 
-    def set_harmonic_bonds(self):
+    def set_harmonic_bonds(self,spring_constant=1.0, spring_distance=0.5):
         '''
         Set harmonic bonds
         '''
         self.harmonic = md.bond.harmonic()
-        self.harmonic.bond_coeff.set('interbody', k=1.0    , r0=0.5);
+        self.harmonic.bond_coeff.set('interbody', k=spring_constant , r0=spring_distance);
 
         # fix diameters for vizualization
         for i in range(0, self.num_rigid_bodies):
@@ -835,19 +854,19 @@ class RigidBodySimulation:
         wca.set_params(mode='shift')
         wca.pair_coeff.set(self.body_types, self.body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
 
-        ########## INTEGRATION ############
-        md.integrate.mode_standard(dt=0.001, aniso=True);
+    def set_simulation_settings(self,time_step=0.001, kT=0.2, rand_seed=42): 
+        md.integrate.mode_standard(dt=time_step, aniso=True);
         rigid     = group.rigid_center();
         non_rigid = group.nonrigid()
         combined  = group.union('combined',rigid,non_rigid)
-        md.integrate.langevin(group=combined, kT=0.2, seed=42);
+        md.integrate.langevin(group=combined, kT=kT, seed=rand_seed);
 
-    def dump_settings(self,output_fname):
+    def dump_settings(self,output_fname,save_period=1e4):
         '''
         Dump settings
         '''
         dump.gsd(output_fname,
-                       period=1e4,
+                       period=save_period,
                        group=group.all(),
                        static=[],
                        overwrite=True);
@@ -878,13 +897,46 @@ class RigidBodySimulation:
         run(num_steps)
 
 def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input",  type=str,   help="Cadnano json file" )
+    parser.add_argument("-o", "--output", type=str,   help="Output directory",          default='.')
+    parser.add_argument("-t", "--time",   type=int,   help="Simulation time",           default=1e7)
+    parser.add_argument("-s", "--step",   type=float, help="Time step",                 default=0.001)
+    parser.add_argument("-k", "--springk", type=float, help="Interbody spring constant", default=1.0)
+    parser.add_argument("-r", "--springr",type=float, help="Interbody distance",        default=0.5)
+
+    args = parser.parse_args()
+    
+    #Assign the parameters
+    input_filename   = args.input
+    output_directory = args.output
+    
+    simulation_time  = args.time
+    simulation_step  = args.step
+    
+    spring_constant  = args.springk
+    spring_distance  = args.springr
+
+    #Check if input file exists
+    if not os.path.isfile(input_filename):
+        sys.exit('Input file does not exist!')
+
+    #Check if output directory exists
+    if not os.path.isdir(output_directory):
+        sys.exit('Output directory does not exist!')
+
+    #Define output filename
+    head, tail      = os.path.split(input_filename)
+    root, ext       = os.path.splitext(tail)
+    output_filename = output_directory+'/'+root+'.gsd'
+
     #Initialize cadnano
     app = cadnano.app()
     doc = app.document = Document()
-    INPUT_FILENAME  = '../cadnano-files/PFD_tripod_2017.json'
-    OUTPUT_FILENAME = '../carbs-output/PFD_tripod_2017.gsd'
 
-    doc.readFile(INPUT_FILENAME);
+    #Read cadnano input file
+    doc.readFile(input_filename);
 
     #Parse the structure for simulation
     new_origami      = Origami()
@@ -907,10 +959,11 @@ def main():
     new_simulation.initialize_particles()
     new_simulation.create_rigid_bodies()
     new_simulation.create_bonds()
-    new_simulation.set_harmonic_bonds()
+    new_simulation.set_harmonic_bonds(spring_constant,spring_distance)
     new_simulation.set_lj_potentials()
-    new_simulation.dump_settings(OUTPUT_FILENAME)
-    new_simulation.run(1e6)
+    new_simulation.set_simulation_settings(time_step=simulation_step)
+    new_simulation.dump_settings(output_filename)
+    new_simulation.run(simulation_time)
 
 if __name__ == "__main__":
   main()
