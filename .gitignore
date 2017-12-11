@@ -2,3 +2,4 @@
 *.pyc
 *.gsd
 *.json
+.DS_Store
