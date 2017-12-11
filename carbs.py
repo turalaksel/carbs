@@ -16,6 +16,8 @@ from cadnano.document import Document
 from hoomd import *
 from hoomd import md
 
+import gsd.hoomd
+
 class Origami:
     '''
     Parent DNA origami model class
@@ -58,7 +60,7 @@ class Origami:
         self.soft_connections       = {}     # Dict of pointers referring to nucleotides separated by skip
 
         #Distance constraints
-        self.crossover_distance      = 2.0   # Distance in Angstrom
+        self.crossover_distance      = 2.0   # Distance in nm
 
     def parse_soft_connections(self):
         self.inter_rigid_body_connections = set()
@@ -544,6 +546,27 @@ class Origami:
         [vh, index, is_fwd] = self.oligos_list[i][j][k]
         return [vh, index, is_fwd]
 
+    def determine_coordinate_limits(self):
+        '''
+        Determine origami coordinate limits 
+        '''
+        coordinates = []
+        for nucleotide in self.nucleotide_list:
+            coordinates.append(nucleotide.position[1])
+
+        #Make the coordinates array
+        coordinates = np.array(coordinates)
+
+        #Determine min and max along all dimensions
+        self.min_x  = np.min(coordinates[:,0])
+        self.max_x  = np.max(coordinates[:,0])
+
+        self.min_y  = np.min(coordinates[:,1])
+        self.max_y  = np.max(coordinates[:,1])
+
+        self.min_z  = np.min(coordinates[:,2])
+        self.max_z  = np.max(coordinates[:,2])
+
     def create_oligos_list(self):
         '''
         Given an array of oligos in part, returns a list of oligos,
@@ -567,64 +590,6 @@ class Origami:
         pos2 = self.get_coordinates(vh2, index2)[is_fwd2]
         distance = np.linalg.norm(pos1 - pos2)
         return distance
-
-    def populate_nucleotide_geometries(self):
-        '''
-        Given an list of list of strands, fills the geometry-related nucleotide
-        attributes such as the vector directions and quaternions
-        '''
-
-        for o, oligo in enumerate(self.oligos_list):
-            for s, strand in enumerate(oligo):
-
-                [vh_0, index_0, is_fwd_0] = self.oligos_list_to_nucleotide_info(0, 0, 0)
-                [vh_1, index_1, is_fwd_1] = self.oligos_list_to_nucleotide_info(0, 0, 1)
-
-                [axis_0, backbone_0] = self.nucleotide_matrix[vh_0][index_0][is_fwd_0].position
-                [axis_1, backbone_1] = self.nucleotide_matrix[vh_1][index_1][is_fwd_1].position
-
-                #Calculate the vectors
-                base_vector_0     = axis_0     - backbone_0
-                backbone_vector_0 = backbone_1 - backbone_0
-
-                aux_vector_a_0 = np.cross(base_vector_0, backbone_vector_0)
-                aux_vector_b_0 = np.cross(aux_vector_a_0, base_vector_0)
-
-                # return 3 orthogonal vectors in nucleotide, for quaternion
-                vect_list_0 = (base_vector_0/np.linalg.norm(base_vector_0), \
-                             aux_vector_a_0/np.linalg.norm(aux_vector_a_0), \
-                             aux_vector_b_0/np.linalg.norm(aux_vector_b_0))
-
-                for n, nucl in enumerate(self.oligos_list[o][s]):
-                    [vh_1, index_1, is_fwd_1] = self.oligos_list_to_nucleotide_info( o, s, n)
-                    [axis_1, backbone_1]      = self.nucleotide_matrix[vh_1][index_1][is_fwd_1].position
-
-                    if n < len(self.oligos_list[o][s]) - 1:
-                        [vh_2, index_2, is_fwd_2] = self.oligos_list_to_nucleotide_info(o, s, n + 1)
-                        [axis_2, backbone_2]      = self.nucleotide_matrix[vh_2][index_2][is_fwd_2].position
-
-                        base_vector_1     = axis_1     - backbone_1
-                        backbone_vector_1 = backbone_2 - backbone_1
-                    elif n == len(oligos_list[o][s]) - 1:
-                        [vh_2, index_2, is_fwd_2] = self.oligos_list_to_nucleotide_info(o, s, n - 1)
-                        [axis_2, backbone_2]      = self.nucleotide_matrix[vh_2][index_2][is_fwd_2].position
-                        base_vector_1     = axis_1 - backbone_1
-                        backbone_vector_1 = - (backbone_2 - backbone_1)
-
-                    aux_vector_a_1 = np.cross(base_vector_1, backbone_vector_1)
-                    aux_vector_b_1 = np.cross(aux_vector_a_1, base_vector_1)
-                    vect_list_1 = (base_vector_1+np.array([0.00001,0,0])/np.linalg.norm(base_vector_1+np.array([0.00001,0,0])), \
-                                 aux_vector_a_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_a_1+np.array([0.00001,0,0])), \
-                                 aux_vector_b_1+np.array([0.00001,0,0])/np.linalg.norm(aux_vector_b_1+np.array([0.00001,0,0])))
-
-                    nucl = self.nucleotide_matrix[vh_1][index_1][is_fwd_1]
-                    nucl.vectors_body_frame  = vect_list_1
-                    nucl.points_global_frame = [backbone_1, axis_1, aux_vector_a_1 + backbone_1]
-                    nucl_quaternion          = vectortools.systemQuaternion(vect_list_0, vect_list_1)
-                    nucl.quaternion          = [nucl_quaternion.w, \
-                                                nucl_quaternion.x, \
-                                                nucl_quaternion.y, \
-                                                nucl_quaternion.z]
 
 class DSNucleotide:
     '''
@@ -668,10 +633,6 @@ class Nucleotide:
         self.strand                       = None      # Nucleotide's strand number
         self.vh                           = None      # Nucleotide's virtual helix
         self.skip                         = False     # Skip value for the nucleotide
-
-        self.points_global_frame          = None      # backbone, sidechain and aux points in global frame
-        self.quaternion                   = None      # quaternion orientation for this nucleotide
-        self.vectors_body_frame           = None      # orthogonal vectors in the body reference frame for quaternion calculation
         self.position                     = None      # Nucleotide position
 
         # Body / simulation variables
@@ -683,12 +644,10 @@ class Body:
     '''
     Fixed attributes of a body.
     A body is a combination of neighboring vhs that move together during
-    relaxation as one rigid body. HOOMD will need its center of mass position,
-    orientation (quaternion), and moment of inertia.
+    relaxation as one rigid body. HOOMD will need its center of mass position and moment of inertia.
     '''
     def __init__(self):
         self.comass_position   = None                 # position of body's center of mass
-        self.comass_quaternion = None                 # quaternion of body's center of mass
         self.moment_inertia    = None                 # body's moment of intertia (calculated via vectortools)
         self.nucleotide_types  = []                   # list of nucleotide types belonging to this body
         self.nucleotides       = []                   # list of nucleotides belonging to this body
@@ -704,14 +663,13 @@ class Body:
     def initialize(self):
         '''
         Given a collection of nucleotides making up a body, initialize the body
-        by calculating the following properties: comass_position, comass_quaternion, and moment_inertia
+        by calculating the following properties: comass_position, and moment_inertia
         '''
 
         # extract the position of backbone bead (1) acquired from cadnano
         positions = [nucleotide.position[1] for nucleotide in self.nucleotides]
-        self.comass_position    = vectortools.calculateCoM(positions)
-        self.moment_inertia     = vectortools.calculateMomentInertia(positions)
-        self.comass_quaternion  = [1., 0., 0., 0.]
+        self.comass_position    = vectortools.calculate_comass(positions)
+        self.moment_inertia     = vectortools.calculate_moment_inertia(positions)
 
 class RigidBodySimulation:
     '''
@@ -738,13 +696,29 @@ class RigidBodySimulation:
         self.body_types               = []
         self.bond_types               = []
 
+        #Simulation constant for determining spring constant and time step
+        #Multiplication of maximum_bond_distance*spring_constant*(time_step**2) should be smaller than this value
+        self.SIMULATION_CONSTANT      = 0.000022
+
+        self.simulation_step_cutoff   = 1E-4
+
         #Rigid/soft bodies from Origami structure
         self.num_rigid_bodies         = 0
         self.num_soft_bodies          = 0
         self.rigid_bodies             = None
         self.soft_bodies              = None
 
-    def set_interbody_harmonic_bond(self,r0=0.5,k0=1.0):
+    def determine_box_dimensions(self,scale=6):
+        '''
+        Estimate the box dimensions from particle coordinates
+        '''
+        self.Lx = scale*int((self.origami.max_x - self.origami.min_x)/2.0)
+        self.Ly = scale*int((self.origami.max_y - self.origami.min_y)/2.0)
+        self.Lz = scale*int((self.origami.max_z - self.origami.min_z)/2.0)
+
+        print('Box dimensions:%d-%d-%d'%(self.Lx,self.Ly,self.Lz))
+
+    def set_interbody_harmonic_bond(self,r0=0.745,k0=1.0):
         '''
         Set interbody harmonic bond parameters
         '''
@@ -757,6 +731,13 @@ class RigidBodySimulation:
         '''
         context.initialize("");
         relax_sim = context.SimulationContext();
+
+    def read_gsd(self):
+        '''
+        Read gsd file
+        '''
+        self.trajectory     = gsd.hoomd.open(self.gsd_filename,'rb')
+        self.final_snapshot = self.trajectory[-1]
 
     def initialize_particles(self):
         '''
@@ -785,7 +766,7 @@ class RigidBodySimulation:
         self.body_types += ["nucleotides"]
 
         self.snapshot = data.make_snapshot(N = self.num_rigid_bodies + self.num_soft_bodies,
-                                          box = data.boxdim(Lx=120, Ly=120, Lz=300),
+                                          box = data.boxdim(Lx=self.Lx, Ly=self.Ly, Lz=self.Lz),
                                           particle_types = self.body_types,
                                           bond_types = ['interbody']);
 
@@ -811,16 +792,21 @@ class RigidBodySimulation:
         self.rigid = md.constrain.rigid();
         for b, body in enumerate(self.rigid_bodies):
             body_type            = self.body_types[b]
-
             nucleotide_positions = [nucleotide.position[1] for nucleotide in body.nucleotides]
-            #move particles to body reference frame
+            
+            #Move particles to body reference frame
             nucleotide_positions -= body.comass_position
-            self.rigid.set_param(body_type, \
-                        types=['nucleotides']*len(nucleotide_positions), \
-                        positions = nucleotide_positions);
+            self.rigid.set_param(body_type,
+                                types=['nucleotides']*len(nucleotide_positions),
+                                positions = nucleotide_positions);
 
         self.rigid.create_bodies()
 
+    def take_snapshot(self):
+        '''
+        Take system synaphot
+        '''
+        self.final_snapshot = self.system.take_snapshot()
 
     def create_bonds(self):
         '''
@@ -828,24 +814,71 @@ class RigidBodySimulation:
         '''
         self.nucleotide_bonds = self.origami.inter_nucleotide_connections
 
+        #Nucleotide number offset
+        delta = self.num_rigid_bodies
         for connection in self.nucleotide_bonds:
-            delta = self.num_rigid_bodies
             nucleotide_num_1, nucleotide_num_2 = connection
             self.system.bonds.add('interbody', delta + nucleotide_num_1, delta + nucleotide_num_2)
 
-    def set_harmonic_bonds(self,spring_constant=1.0, spring_distance=0.5):
+    def set_harmonic_bonds(self,spring_constant=1.0, spring_distance=0.745):
         '''
         Set harmonic bonds
         '''
         self.harmonic = md.bond.harmonic()
         self.harmonic.bond_coeff.set('interbody', k=spring_constant , r0=spring_distance);
 
-        # fix diameters for vizualization
+        #Save the interbody harmonic bond parameters
+        self.set_interbody_harmonic_bond(spring_distance,spring_constant)
+        
+        #Fix diameters for visualization
         for i in range(0, self.num_rigid_bodies):
             self.system.particles[i].diameter = 2.0
         for i in range(self.num_rigid_bodies, len(self.system.particles)):
-            self.system.particles[i].diameter = 0.5
+            self.system.particles[i].diameter = 0.1
 
+    def set_simulation_step(self,k0=1.0):
+        '''
+        Set simulation step for a spring constant
+        '''
+        self.simulation_step = np.sqrt(self.SIMULATION_CONSTANT/(k0*(self.max_bond_distance-self.interbody_harmonic_bond['r0'])))
+        self.spring_constant = k0
+        self.harmonic.bond_coeff.set('interbody', k=k0);
+        md.integrate.mode_standard(dt=self.simulation_step, aniso=True);
+
+
+    def get_distances(self):
+        '''
+        Get the interbody distanes
+        '''
+        #Nucleotide number offset
+        delta = self.num_rigid_bodies
+
+        #Initialize bond distances
+        self.bond_distances = []
+
+        for connection in self.nucleotide_bonds:
+            #Get the nucleotide numbers
+            nucleotide_num_1, nucleotide_num_2 = connection
+
+            #Get the particle numbers in the simulation
+            particle_num_1 = nucleotide_num_1 + delta
+            particle_num_2 = nucleotide_num_2 + delta
+
+            #Measure the distance
+            particle_coor_1 = self.final_snapshot.particles.position[particle_num_1]
+            particle_coor_2 = self.final_snapshot.particles.position[particle_num_2]
+            
+            distance = vectortools.eular_distance(particle_coor_1,particle_coor_2)
+
+            self.bond_distances.append([particle_num_1,particle_num_2,distance])
+        
+        #Make the bond distances array
+        self.bond_distances    = np.array(self.bond_distances)
+
+        #Get the maximum value
+        self.max_bond_distance = np.max(self.bond_distances[:,2])
+        self.min_bond_distance = np.min(self.bond_distances[:,2])
+        
     def set_lj_potentials(self):
         '''
         Set LJ potentials
@@ -854,69 +887,81 @@ class RigidBodySimulation:
         wca.set_params(mode='shift')
         wca.pair_coeff.set(self.body_types, self.body_types, epsilon=1.0, sigma=1.0, r_cut=1.0*2**(1/6))
 
-    def set_simulation_settings(self,time_step=0.001, kT=0.2, rand_seed=42): 
+    def set_simulation_settings(self,time_step=0.001, kT=1.0, rand_seed=42): 
         md.integrate.mode_standard(dt=time_step, aniso=True);
         rigid     = group.rigid_center();
         non_rigid = group.nonrigid()
-        combined  = group.union('combined',rigid,non_rigid)
+        combined  = group.union('combined',rigid, non_rigid)
         md.integrate.langevin(group=combined, kT=kT, seed=rand_seed);
 
-    def dump_settings(self,output_fname,save_period=1e4):
+    def dump_settings(self,output_fname,save_period=1e3):
         '''
         Dump settings
         '''
+        #Assign the output filename
+        self.gsd_filename = output_fname 
+        
         dump.gsd(output_fname,
                        period=save_period,
                        group=group.all(),
                        static=[],
                        overwrite=True);
 
-    def update_quaternions(self):
-        '''
-        update global particle positions and quaternions
-        '''
-        for b, body in enumerate(self.rigid_bodies):
-            for nucleotides in body.nucleotides:
-                vh     = nucleotide.vh
-                index  = nucleotide.index
-                is_fwd = nucl.is_fwd
-                simulation_num      = nucleotide.simulation_nucleotide_num
-                nucleotide_position = self.system.particles[simulation_num].position
-
-                nucl_quaternion_new = system.particles[simulation_num].orientation
-                nucl_quaternion_new = vectortools.quat2Quat(nucl_quaternion_new)
-                nucl_quaternion_old = nucleotide.quaternion
-                nucl_quaternion_old = vectortools.quat2Quat(nucl_quaternion_old)
-
-                quat = nucl_quaternion_new * nucl_quaternion_old
-                quat = [quat.w, quat.x, quat.y, quat.z]
-                self.origami.nucleotide_matrix[vh][index][is_fwd].position[1] = nucl_position
-                self.origami.nucleotide_matrix[vh][index][is_fwd].quaternion  = quat
-
     def run(self,num_steps=1e6):
         run(num_steps)
 
+    def run_up_to(self,num_steps=1e4):
+        run_upto(num_steps)
+
+    def folding_protocol(self,simulation_time=1e4,num_itr=10):
+        '''
+        Folding protocol
+        '''
+
+        print('Starting maximum distance:%f'%(self.max_bond_distance))
+        
+        for itr in range(num_itr):
+            
+            #Ramping up the spring constant
+            start_1  = itr*10
+            finish_1 = (itr+1)*10
+            for i in range(start_1,finish_1):
+                self.run_up_to(simulation_time*(i+1))
+                self.read_gsd()
+                self.get_distances()
+                self.set_simulation_step(k0=10**(itr)+(i-start_1)*10**itr)
+                
+                print('Folding step:%d, Maximum Distance:%f, Time Step:%e, Spring Constant:%f'%(i,self.max_bond_distance, self.simulation_step, self.spring_constant))
+                
+                #If simulation step is below the cutoff value, exit
+                if self.simulation_step < self.simulation_step_cutoff:
+                    sys.exit('Simulation step is below cutoff value!')    
+
+            #Spring constant is kept constant
+            start_2  = (itr+1)*10
+            finish_2 = (itr+2)*10
+            for i in range(start_2,finish_2):
+                self.run_up_to(simulation_time*(i+1))
+                self.read_gsd()
+                self.get_distances()
+                self.set_simulation_step(k0=10**(itr+1))
+                
+                print('Folding step:%d, Maximum Distance:%f, Time Step:%e, Spring Constant:%f'%(i,self.max_bond_distance, self.simulation_step, self.spring_constant))
+
+                #If simulation step is below the cutoff value, exit
+                if self.simulation_step < self.simulation_step_cutoff:
+                    sys.exit('Simulation step is below cutoff value!')
 def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input",  type=str,   help="Cadnano json file" )
     parser.add_argument("-o", "--output", type=str,   help="Output directory",          default='.')
-    parser.add_argument("-t", "--time",   type=int,   help="Simulation time",           default=1e7)
-    parser.add_argument("-s", "--step",   type=float, help="Time step",                 default=0.001)
-    parser.add_argument("-k", "--springk", type=float, help="Interbody spring constant", default=1.0)
-    parser.add_argument("-r", "--springr",type=float, help="Interbody distance",        default=0.5)
 
     args = parser.parse_args()
     
     #Assign the parameters
     input_filename   = args.input
     output_directory = args.output
-    
-    simulation_time  = args.time
-    simulation_step  = args.step
-    
-    spring_constant  = args.springk
-    spring_distance  = args.springr
 
     #Check if input file exists
     if not os.path.isfile(input_filename):
@@ -951,19 +996,24 @@ def main():
     new_origami.assign_nucleotide_connections()
     new_origami.cluster_into_bodies()
     new_origami.parse_soft_connections()
+    new_origami.determine_coordinate_limits()
 
     #Prepare the simulation
     new_simulation         = RigidBodySimulation()
     new_simulation.origami = new_origami
+    new_simulation.determine_box_dimensions()
     new_simulation.initialize_relax_md()
     new_simulation.initialize_particles()
     new_simulation.create_rigid_bodies()
     new_simulation.create_bonds()
-    new_simulation.set_harmonic_bonds(spring_constant,spring_distance)
+    new_simulation.set_harmonic_bonds()
     new_simulation.set_lj_potentials()
-    new_simulation.set_simulation_settings(time_step=simulation_step)
+    new_simulation.set_simulation_settings()
     new_simulation.dump_settings(output_filename)
-    new_simulation.run(simulation_time)
-
+    new_simulation.take_snapshot()
+    new_simulation.get_distances()
+    new_simulation.set_simulation_step()
+    new_simulation.folding_protocol()
+    
 if __name__ == "__main__":
   main()
