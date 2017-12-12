@@ -921,10 +921,10 @@ class RigidBodySimulation:
         print('Starting maximum distance:%f'%(self.max_bond_distance))
         
         for itr in range(num_itr):
-            
+
             #Ramping up the spring constant
-            start_1  = itr*10
-            finish_1 = (itr+1)*10
+            start_1  = 2*itr*10
+            finish_1 = (2*itr+1)*10
             for i in range(start_1,finish_1):
                 self.run_up_to(simulation_time*(i+1))
                 self.read_gsd()
@@ -938,8 +938,8 @@ class RigidBodySimulation:
                     sys.exit('Simulation step is below cutoff value!')    
 
             #Spring constant is kept constant
-            start_2  = (itr+1)*10
-            finish_2 = (itr+2)*10
+            start_2  = (2*itr+1)*10
+            finish_2 = (2*itr+2)*10
             for i in range(start_2,finish_2):
                 self.run_up_to(simulation_time*(i+1))
                 self.read_gsd()
