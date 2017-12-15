@@ -938,9 +938,13 @@ class RigidBodySimulation:
         print('Starting maximum distance:%f'%(self.max_bond_distance))
         
         for itr in range(num_itr):
-            
+
             #Ramping up the spring constant
+<<<<<<< HEAD
             start_1  = (2*itr*10)
+=======
+            start_1  = 2*itr*10
+>>>>>>> 1513e668a5dc4721d8895fa4b5e0266a78d8ce36
             finish_1 = (2*itr+1)*10
             for i in range(start_1,finish_1):
                 self.run_up_to(simulation_time*(i+1))
