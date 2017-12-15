@@ -17,6 +17,7 @@ from hoomd import *
 from hoomd import md
 
 import gsd.hoomd
+import math
 
 class Origami:
     '''
@@ -43,24 +44,28 @@ class Origami:
         self.inter_nucleotide__connections = []
 
         #Cadnano parameters
-        self.part                   = None
-        self.oligos                 = None
-        self.strands                = None
-        self.num_vhs                = None
-        self.nucleotide_list        = None
-        self.nucleotide_matrix      = None
+        self.part                     = None
+        self.oligos                   = None
+        self.strands                  = None
+        self.num_vhs                  = None
+        
+        self.nucleotide_list          = None
+        self.nucleotide_matrix        = None
 
-        self.nucleotide_type_list   = None
-        self.nucleotide_type_matrix = None
+        self.nucleotide_type_list     = None
+        self.nucleotide_type_matrix   = None
 
-        self.crossovers             = None
-        self.vh_vh_crossovers       = None   # Given vh1, vh2, vh_vh_crossovers[vh_1][vh_2] is the number of xovers between them
-        self.long_range_connections = {}     # Dict connecting pointer_1 (vh, index, is_fwd) to pointer_2
-        self.short_range_connections= {}     # Dict connecting pointer_1 (vh, index, is_fwd) to pointer_2
-        self.soft_connections       = {}     # Dict of pointers referring to nucleotides separated by skip
+        self.insert_nucleotide_list   = None
+        self.insert_nucleotide_matrix = None 
+
+        self.crossovers               = None
+        self.vh_vh_crossovers         = None   # Given vh1, vh2, vh_vh_crossovers[vh_1][vh_2] is the number of xovers between them
+        self.long_range_connections   = {}     # Dict connecting pointer_1 (vh, index, is_fwd) to pointer_2
+        self.short_range_connections  = {}     # Dict connecting pointer_1 (vh, index, is_fwd) to pointer_2
+        self.soft_connections         = {}     # Dict of pointers referring to nucleotides separated by skip
 
         #Distance constraints
-        self.crossover_distance      = 2.0   # Distance in nm
+        self.crossover_distance       = 2.0   # Distance in nm
 
     def parse_soft_connections(self):
         self.inter_rigid_body_connections = set()
@@ -85,13 +90,19 @@ class Origami:
             if nucleotide_1.body.type and nucleotide_2.body.type and body_num_1 != body_num_2 and not (body_num_2,body_num_1) in self.inter_rigid_body_connections:
                 self.inter_rigid_body_connections.add((body_num_1,body_num_2))
 
-
             #Add nucleotide-nucleotide connections to list
             nucleotide_sim_num_1 = nucleotide_1.simulation_nucleotide_num
             nucleotide_sim_num_2 = nucleotide_2.simulation_nucleotide_num
 
             if not (nucleotide_sim_num_2,nucleotide_sim_num_1) in self.inter_nucleotide_connections:
                 self.inter_nucleotide_connections.add((nucleotide_sim_num_1,nucleotide_sim_num_2))
+
+    def incorporate_inserts(self):
+        '''
+        Incorporate inserts
+        '''
+
+
 
     def incorporate_skips(self):
         '''
@@ -139,7 +150,7 @@ class Origami:
                 current_nucleotide_fwd = self.nucleotide_matrix[vh][idx][1]
 
                 if current_nucleotide_fwd != None and current_nucleotide_rev != None:
-                    ds_nucleotide = DSNucleotide()
+                    ds_nucleotide                  = DSNucleotide()
                     ds_nucleotide.fwd_nucleotide   = current_nucleotide_fwd
                     ds_nucleotide.rev_nucleotide   = current_nucleotide_rev
                     ds_nucleotide.type             = 1
@@ -339,14 +350,14 @@ class Origami:
             self.num_bodies += 1
 
         #2. Update soft body nucleotide body position numbers and body numbers
-        nucleotide_number = 0
+        self.nucleotide_number = 0
         for i in range(len(self.soft_bodies)):
             soft_body               = self.soft_bodies[i]
             soft_body.nucleotides   = []
             nucleotide_type         = soft_body.nucleotide_types[0]
 
             #Update the nucleotide number
-            nucleotide_type.nucleotide.simulation_nucleotide_num = nucleotide_number
+            nucleotide_type.nucleotide.simulation_nucleotide_num = self.nucleotide_number
 
             #Assign soft body to nucleotide
             nucleotide_type.nucleotide.body = soft_body
@@ -354,7 +365,7 @@ class Origami:
             soft_body.nucleotides  += [nucleotide_type.nucleotide]
             self.body_nucleotides  += [nucleotide_type.nucleotide]
 
-            nucleotide_number      += 1
+            self.nucleotide_number += 1
 
             #Initialize soft bodies
             soft_body.initialize()
@@ -367,17 +378,17 @@ class Origami:
                 fwd_nucleotide = nucleotide_type.fwd_nucleotide
                 rev_nucleotide = nucleotide_type.rev_nucleotide
 
-                fwd_nucleotide.simulation_nucleotide_num = nucleotide_number
-                rev_nucleotide.simulation_nucleotide_num = nucleotide_number+1
+                fwd_nucleotide.simulation_nucleotide_num = self.nucleotide_number
+                rev_nucleotide.simulation_nucleotide_num = self.nucleotide_number + 1
 
                 #Assign the rigid bodies to nucleotides
                 fwd_nucleotide.body = rigid_body
                 rev_nucleotide.body = rigid_body
 
-                nucleotide_number    += 2
+                self.nucleotide_number += 2
 
-                rigid_body.nucleotides+= [fwd_nucleotide,rev_nucleotide]
-                self.body_nucleotides += [fwd_nucleotide,rev_nucleotide]
+                rigid_body.nucleotides += [fwd_nucleotide,rev_nucleotide]
+                self.body_nucleotides  += [fwd_nucleotide,rev_nucleotide]
 
             #Initialize rigid bodies
             rigid_body.initialize()
@@ -402,7 +413,7 @@ class Origami:
             oligo_helper_list.append(strand_helper_list)
         return oligo_helper_list
 
-    def find_skips(self):
+    def find_skips_inserts(self):
         '''
         Identify all the skips in the structure
         '''
@@ -414,8 +425,11 @@ class Origami:
                 index_3p  = strand.idx3Prime()
                 direction = (-1 + 2*strand.isForward()) #-1 if backwards, 1 if fwd
                 for idx in range(index_5p, index_3p + direction, direction):
-                    if strand.hasInsertionAt(idx) and strand.insertionLengthBetweenIdxs(idx,idx) == -1:
-                        self.skip_matrix[vh][idx][int(strand.isForward())] = True
+                    if strand.hasInsertionAt(idx):
+                        if strand.insertionLengthBetweenIdxs(idx,idx) == -1:
+                            self.skip_matrix[vh][idx][int(strand.isForward())] = True
+                        else:
+                             self.insert_matrix[vh][idx][int(strand.isForward())] = strand.insertionLengthBetweenIdxs(idx,idx)
 
     def list_oligos(self):
         '''
@@ -451,6 +465,7 @@ class Origami:
         self.nucleotide_type_matrix  = [[ None  for idx in range(num_bases)] for vh in range(self.num_vhs)]
         self.vh_vh_crossovers        = [[0  for vh in range(self.num_vhs)] for vh in range(self.num_vhs)]
         self.skip_matrix             = [[[False,False]  for idx in range(num_bases)] for vh in range(self.num_vhs)]
+        self.insert_matrix           = [[[0,0]  for idx in range(num_bases)] for vh in range(self.num_vhs)]
 
     def connection3p(self, strand):
         '''
@@ -518,13 +533,14 @@ class Origami:
                 is_fwd = int(direction > 0)
 
                 new_nucleotide = Nucleotide()
-                new_nucleotide.direction         = direction
-                new_nucleotide.index             = index
-                new_nucleotide.position          = [coordinates[2], coordinates[is_fwd]] #Sidechain(axis) and backbone coordinates
-                new_nucleotide.strand            = strand
-                new_nucleotide.vh                = vh
-                new_nucleotide.is_fwd            = is_fwd
-                new_nucleotide.skip              = self.skip_matrix[vh][index][is_fwd]
+                new_nucleotide.direction   = direction
+                new_nucleotide.index       = index
+                new_nucleotide.position    = [coordinates[2], coordinates[is_fwd]] #Axis and backbone coordinates
+                new_nucleotide.strand      = strand
+                new_nucleotide.vh          = vh
+                new_nucleotide.is_fwd      = is_fwd
+                new_nucleotide.skip        = self.skip_matrix[vh][index][is_fwd]
+                new_nucleotide.insert      = self.insert_matrix[vh][index][is_fwd]
 
                 #Assign the nucleotide
                 self.nucleotide_matrix[vh][index][is_fwd] = new_nucleotide
@@ -634,6 +650,7 @@ class Nucleotide:
         self.vh                           = None      # Nucleotide's virtual helix
         self.skip                         = False     # Skip value for the nucleotide
         self.position                     = None      # Nucleotide position
+        self.insert                       = 0
 
         # Body / simulation variables
         self.body                         = None      # body (class) this nucleotide belongs to
@@ -712,9 +729,9 @@ class RigidBodySimulation:
         '''
         Estimate the box dimensions from particle coordinates
         '''
-        self.Lx = scale*int((self.origami.max_x - self.origami.min_x)/2.0)
-        self.Ly = scale*int((self.origami.max_y - self.origami.min_y)/2.0)
-        self.Lz = scale*int((self.origami.max_z - self.origami.min_z)/2.0)
+        self.Lx = int(scale)*math.ceil(self.origami.max_x - self.origami.min_x)
+        self.Ly = int(scale)*math.ceil(self.origami.max_y - self.origami.min_y)
+        self.Lz = int(scale)*math.ceil(self.origami.max_z - self.origami.min_z)
 
         print('Box dimensions:%d-%d-%d'%(self.Lx,self.Ly,self.Lz))
 
@@ -923,8 +940,8 @@ class RigidBodySimulation:
         for itr in range(num_itr):
             
             #Ramping up the spring constant
-            start_1  = itr*10
-            finish_1 = (itr+1)*10
+            start_1  = (2*itr*10)
+            finish_1 = (2*itr+1)*10
             for i in range(start_1,finish_1):
                 self.run_up_to(simulation_time*(i+1))
                 self.read_gsd()
@@ -938,8 +955,8 @@ class RigidBodySimulation:
                     sys.exit('Simulation step is below cutoff value!')    
 
             #Spring constant is kept constant
-            start_2  = (itr+1)*10
-            finish_2 = (itr+2)*10
+            start_2  = (2*itr+1)*10
+            finish_2 = (2*itr+2)*10
             for i in range(start_2,finish_2):
                 self.run_up_to(simulation_time*(i+1))
                 self.read_gsd()
@@ -956,12 +973,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input",  type=str,   help="Cadnano json file" )
     parser.add_argument("-o", "--output", type=str,   help="Output directory",          default='.')
-
+    parser.add_argument("-s", "--scale",  type=int,   help="Box scale" )
+   
     args = parser.parse_args()
     
     #Assign the parameters
     input_filename   = args.input
     output_directory = args.output
+    box_scale        = args.scale
 
     #Check if input file exists
     if not os.path.isfile(input_filename):
@@ -988,7 +1007,7 @@ def main():
     new_origami.part = doc.activePart()
     new_origami.list_oligos()
     new_origami.initialize_nucleotide_matrix()
-    new_origami.find_skips()
+    new_origami.find_skips_inserts()
     new_origami.create_oligos_list()
     new_origami.get_connections()
     new_origami.assign_nucleotide_types()
@@ -1001,7 +1020,7 @@ def main():
     #Prepare the simulation
     new_simulation         = RigidBodySimulation()
     new_simulation.origami = new_origami
-    new_simulation.determine_box_dimensions()
+    new_simulation.determine_box_dimensions(box_scale)
     new_simulation.initialize_relax_md()
     new_simulation.initialize_particles()
     new_simulation.create_rigid_bodies()
